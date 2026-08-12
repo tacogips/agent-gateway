@@ -7,8 +7,8 @@ routing. Riela sends versioned `agent/execute` requests to
 ## Supported vendors
 
 - CLI clients: Claude Code, Codex, and Cursor.
-- Direct streaming APIs: OpenAI Responses, Anthropic Messages, Gemini
-  `streamGenerateContent`, and OpenRouter Chat Completions.
+- Direct APIs: OpenAI Responses, Anthropic Messages, Gemini
+  `streamGenerateContent`, OpenRouter Chat Completions, and Cursor Cloud Agents.
 - Alternate provider routing for Codex and Claude Code, including OpenRouter.
 
 Provider credentials are referenced by environment-variable name. Secret values
@@ -35,6 +35,11 @@ agent-gateway client \
   --prompt 'Reply with exactly OK' \
   --api-key-environment OPENROUTER_API_KEY
 ```
+
+Resume a vendor session by passing `--session-id`. Cursor Cloud Agent repository
+settings have typed client flags such as `--cursor-repository-url`,
+`--cursor-starting-ref`, `--cursor-work-on-current-branch`, and
+`--cursor-auto-create-pr`.
 
 stdout contains only JSONL `agent/event` notifications followed by one
 terminal response. For a persistent client, start `agent-gateway server` and

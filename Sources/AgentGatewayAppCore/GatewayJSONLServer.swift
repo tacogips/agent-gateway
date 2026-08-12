@@ -35,14 +35,51 @@ public struct GatewayJSONLServer: Sendable {
   }
 
   public func handle(line: String, writer: GatewayJSONLWriter) async {
-    let request: GatewayRPCRequest
+    let envelope: GatewayRequestEnvelope
     do {
-      request = try JSONDecoder().decode(GatewayRPCRequest.self, from: Data(line.utf8))
+      envelope = try JSONDecoder().decode(GatewayRequestEnvelope.self, from: Data(line.utf8))
     } catch {
       writer.write(GatewayRPCResponse(id: "", error: GatewayRPCError(code: -32700, message: "invalid JSONL request")))
       return
     }
-    await handle(request: request, writer: writer)
+    do {
+      switch envelope.method {
+      case "agent/execute":
+        let request = try JSONDecoder().decode(GatewayRPCRequest.self, from: Data(line.utf8))
+        await handle(request: request, writer: writer)
+      case "agent/readiness":
+        let request = try JSONDecoder().decode(GatewayReadinessRPCRequest.self, from: Data(line.utf8))
+        handle(readinessRequest: request, writer: writer)
+      default:
+        writer.write(GatewayRPCResponse(
+          id: envelope.id,
+          error: GatewayRPCError(code: -32601, message: "method not found")
+        ))
+      }
+    } catch {
+      writer.write(GatewayRPCResponse(
+        id: envelope.id,
+        error: GatewayRPCError(code: -32602, message: "invalid request parameters")
+      ))
+    }
+  }
+
+  public func handle(readinessRequest request: GatewayReadinessRPCRequest, writer: GatewayJSONLWriter) {
+    guard request.jsonrpc == GatewayProtocolVersion.jsonRPC, request.method == "agent/readiness" else {
+      writer.write(GatewayReadinessRPCResponse(
+        id: request.id,
+        error: GatewayRPCError(code: -32601, message: "method not found")
+      ))
+      return
+    }
+    guard let checker = executor as? any GatewayReadinessChecking else {
+      writer.write(GatewayReadinessRPCResponse(
+        id: request.id,
+        error: GatewayRPCError(code: -32603, message: "readiness is unavailable")
+      ))
+      return
+    }
+    writer.write(GatewayReadinessRPCResponse(id: request.id, result: checker.readiness(request.params)))
   }
 
   public func handle(request: GatewayRPCRequest, writer: GatewayJSONLWriter) async {
@@ -52,7 +89,7 @@ public struct GatewayJSONLServer: Sendable {
     }
     let sequence = GatewaySequence()
     do {
-      let result = try await executor.execute(request.params) { type, channel, delta, snapshot, payload in
+      let result = try await executor.execute(request.params) { type, channel, delta, snapshot, payload, sessionId in
         writer.write(GatewayRPCNotification(event: GatewayStreamEvent(
           requestId: request.id,
           sequence: sequence.next(),
@@ -61,7 +98,8 @@ public struct GatewayJSONLServer: Sendable {
           channel: channel,
           textDelta: delta,
           textSnapshot: snapshot,
-          vendorPayload: payload
+          vendorPayload: payload,
+          sessionId: sessionId
         )))
       }
       writer.write(GatewayRPCResponse(id: request.id, result: result))
@@ -71,6 +109,11 @@ public struct GatewayJSONLServer: Sendable {
       writer.write(GatewayRPCResponse(id: request.id, error: GatewayRPCError(code: -32603, message: error.localizedDescription)))
     }
   }
+}
+
+private struct GatewayRequestEnvelope: Decodable {
+  var id: String
+  var method: String
 }
 
 private final class GatewaySequence: @unchecked Sendable {

@@ -2,7 +2,7 @@ import AgentGateway
 import Foundation
 
 struct GatewaySubprocessClient {
-  func run(request: GatewayRPCRequest) throws -> Int32 {
+  func run<Request: Encodable>(request: Request) throws -> Int32 {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
     process.arguments = ["server"]

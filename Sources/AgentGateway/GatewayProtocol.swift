@@ -9,6 +9,7 @@ public enum GatewayVendor: String, Codable, CaseIterable, Sendable {
   case claudeCode = "claude-code"
   case codex
   case cursor
+  case cursorAPI = "cursor-api"
   case openAI = "openai"
   case anthropic
   case gemini
@@ -18,7 +19,7 @@ public enum GatewayVendor: String, Codable, CaseIterable, Sendable {
     switch self {
     case .claudeCode, .codex, .cursor:
       true
-    case .openAI, .anthropic, .gemini, .openRouter:
+    case .openAI, .anthropic, .gemini, .openRouter, .cursorAPI:
       false
     }
   }
@@ -31,6 +32,82 @@ public enum GatewayEventChannel: String, Codable, Sendable {
   case tool
   case usage
   case vendor
+}
+
+public enum GatewaySessionMode: String, Codable, Sendable {
+  case new
+  case reuse
+}
+
+public struct GatewayCursorAPIOptions: Codable, Equatable, Sendable {
+  public var repositoryURL: String?
+  public var startingRef: String?
+  public var workOnCurrentBranch: Bool?
+  public var autoCreatePR: Bool?
+
+  public init(
+    repositoryURL: String? = nil,
+    startingRef: String? = nil,
+    workOnCurrentBranch: Bool? = nil,
+    autoCreatePR: Bool? = nil
+  ) {
+    self.repositoryURL = repositoryURL
+    self.startingRef = startingRef
+    self.workOnCurrentBranch = workOnCurrentBranch
+    self.autoCreatePR = autoCreatePR
+  }
+}
+
+public struct GatewayImageInput: Codable, Equatable, Sendable {
+  public var filePath: String?
+  public var mimeType: String?
+  public var dataBase64: String?
+
+  public init(filePath: String, mimeType: String? = nil) {
+    self.filePath = filePath
+    self.mimeType = mimeType
+    self.dataBase64 = nil
+  }
+
+  public init(dataBase64: String, mimeType: String) {
+    self.filePath = nil
+    self.mimeType = mimeType
+    self.dataBase64 = dataBase64
+  }
+}
+
+public struct GatewayRetryPolicy: Codable, Equatable, Sendable {
+  public var maxAttempts: Int
+  public var initialDelayMilliseconds: Int
+  public var maximumDelayMilliseconds: Int
+
+  public init(
+    maxAttempts: Int = 3,
+    initialDelayMilliseconds: Int = 250,
+    maximumDelayMilliseconds: Int = 2_000
+  ) {
+    self.maxAttempts = max(1, min(maxAttempts, 10))
+    self.initialDelayMilliseconds = max(0, min(initialDelayMilliseconds, 60_000))
+    self.maximumDelayMilliseconds = max(
+      self.initialDelayMilliseconds,
+      min(maximumDelayMilliseconds, 60_000)
+    )
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case maxAttempts
+    case initialDelayMilliseconds
+    case maximumDelayMilliseconds
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      maxAttempts: try container.decodeIfPresent(Int.self, forKey: .maxAttempts) ?? 3,
+      initialDelayMilliseconds: try container.decodeIfPresent(Int.self, forKey: .initialDelayMilliseconds) ?? 250,
+      maximumDelayMilliseconds: try container.decodeIfPresent(Int.self, forKey: .maximumDelayMilliseconds) ?? 2_000
+    )
+  }
 }
 
 public struct GatewayExecuteParams: Codable, Equatable, Sendable {
@@ -46,6 +123,11 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
   public var apiKeyEnvironment: String?
   public var baseURL: String?
   public var maxTokens: Int?
+  public var sessionMode: GatewaySessionMode
+  public var sessionId: String?
+  public var cursorAPI: GatewayCursorAPIOptions?
+  public var images: [GatewayImageInput]
+  public var retryPolicy: GatewayRetryPolicy
 
   public init(
     protocolVersion: String = GatewayProtocolVersion.current,
@@ -59,7 +141,12 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
     providerName: String? = nil,
     apiKeyEnvironment: String? = nil,
     baseURL: String? = nil,
-    maxTokens: Int? = nil
+    maxTokens: Int? = nil,
+    sessionMode: GatewaySessionMode = .new,
+    sessionId: String? = nil,
+    cursorAPI: GatewayCursorAPIOptions? = nil,
+    images: [GatewayImageInput] = [],
+    retryPolicy: GatewayRetryPolicy = GatewayRetryPolicy()
   ) {
     self.protocolVersion = protocolVersion
     self.vendor = vendor
@@ -73,6 +160,55 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
     self.apiKeyEnvironment = apiKeyEnvironment
     self.baseURL = baseURL
     self.maxTokens = maxTokens
+    self.sessionMode = sessionMode
+    self.sessionId = sessionId
+    self.cursorAPI = cursorAPI
+    self.images = images
+    self.retryPolicy = retryPolicy
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case protocolVersion
+    case vendor
+    case model
+    case prompt
+    case systemPrompt
+    case workingDirectory
+    case executable
+    case arguments
+    case providerName
+    case apiKeyEnvironment
+    case baseURL
+    case maxTokens
+    case sessionMode
+    case sessionId
+    case cursorAPI
+    case images
+    case retryPolicy
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      protocolVersion: try container.decodeIfPresent(String.self, forKey: .protocolVersion)
+        ?? GatewayProtocolVersion.current,
+      vendor: try container.decode(GatewayVendor.self, forKey: .vendor),
+      model: try container.decode(String.self, forKey: .model),
+      prompt: try container.decode(String.self, forKey: .prompt),
+      systemPrompt: try container.decodeIfPresent(String.self, forKey: .systemPrompt),
+      workingDirectory: try container.decodeIfPresent(String.self, forKey: .workingDirectory),
+      executable: try container.decodeIfPresent(String.self, forKey: .executable),
+      arguments: try container.decodeIfPresent([String].self, forKey: .arguments) ?? [],
+      providerName: try container.decodeIfPresent(String.self, forKey: .providerName),
+      apiKeyEnvironment: try container.decodeIfPresent(String.self, forKey: .apiKeyEnvironment),
+      baseURL: try container.decodeIfPresent(String.self, forKey: .baseURL),
+      maxTokens: try container.decodeIfPresent(Int.self, forKey: .maxTokens),
+      sessionMode: try container.decodeIfPresent(GatewaySessionMode.self, forKey: .sessionMode) ?? .new,
+      sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId),
+      cursorAPI: try container.decodeIfPresent(GatewayCursorAPIOptions.self, forKey: .cursorAPI),
+      images: try container.decodeIfPresent([GatewayImageInput].self, forKey: .images) ?? [],
+      retryPolicy: try container.decodeIfPresent(GatewayRetryPolicy.self, forKey: .retryPolicy) ?? GatewayRetryPolicy()
+    )
   }
 }
 
@@ -90,6 +226,84 @@ public struct GatewayRPCRequest: Codable, Equatable, Sendable {
   }
 }
 
+public struct GatewayReadinessParams: Codable, Equatable, Sendable {
+  public var protocolVersion: String
+  public var vendor: GatewayVendor
+  public var executable: String?
+  public var apiKeyEnvironment: String?
+
+  public init(
+    protocolVersion: String = GatewayProtocolVersion.current,
+    vendor: GatewayVendor,
+    executable: String? = nil,
+    apiKeyEnvironment: String? = nil
+  ) {
+    self.protocolVersion = protocolVersion
+    self.vendor = vendor
+    self.executable = executable
+    self.apiKeyEnvironment = apiKeyEnvironment
+  }
+}
+
+public struct GatewayReadinessRPCRequest: Codable, Equatable, Sendable {
+  public var jsonrpc: String
+  public var id: String
+  public var method: String
+  public var params: GatewayReadinessParams
+
+  public init(id: String, params: GatewayReadinessParams) {
+    self.jsonrpc = GatewayProtocolVersion.jsonRPC
+    self.id = id
+    self.method = "agent/readiness"
+    self.params = params
+  }
+}
+
+public enum GatewayReadinessStatus: String, Codable, Sendable {
+  case ready
+  case unavailable
+}
+
+public struct GatewayReadinessResult: Codable, Equatable, Sendable {
+  public var protocolVersion: String
+  public var vendor: GatewayVendor
+  public var status: GatewayReadinessStatus
+  public var detail: String
+
+  public init(
+    protocolVersion: String = GatewayProtocolVersion.current,
+    vendor: GatewayVendor,
+    status: GatewayReadinessStatus,
+    detail: String
+  ) {
+    self.protocolVersion = protocolVersion
+    self.vendor = vendor
+    self.status = status
+    self.detail = detail
+  }
+}
+
+public struct GatewayReadinessRPCResponse: Codable, Equatable, Sendable {
+  public var jsonrpc: String
+  public var id: String
+  public var result: GatewayReadinessResult?
+  public var error: GatewayRPCError?
+
+  public init(id: String, result: GatewayReadinessResult) {
+    self.jsonrpc = GatewayProtocolVersion.jsonRPC
+    self.id = id
+    self.result = result
+    self.error = nil
+  }
+
+  public init(id: String, error: GatewayRPCError) {
+    self.jsonrpc = GatewayProtocolVersion.jsonRPC
+    self.id = id
+    self.result = nil
+    self.error = error
+  }
+}
+
 public struct GatewayStreamEvent: Codable, Equatable, Sendable {
   public var requestId: String
   public var sequence: Int
@@ -99,6 +313,7 @@ public struct GatewayStreamEvent: Codable, Equatable, Sendable {
   public var textDelta: String?
   public var textSnapshot: String?
   public var vendorPayload: String?
+  public var sessionId: String?
 
   public init(
     requestId: String,
@@ -108,7 +323,8 @@ public struct GatewayStreamEvent: Codable, Equatable, Sendable {
     channel: GatewayEventChannel,
     textDelta: String? = nil,
     textSnapshot: String? = nil,
-    vendorPayload: String? = nil
+    vendorPayload: String? = nil,
+    sessionId: String? = nil
   ) {
     self.requestId = requestId
     self.sequence = sequence
@@ -118,6 +334,7 @@ public struct GatewayStreamEvent: Codable, Equatable, Sendable {
     self.textDelta = textDelta
     self.textSnapshot = textSnapshot
     self.vendorPayload = vendorPayload
+    self.sessionId = sessionId
   }
 }
 
@@ -152,6 +369,7 @@ public struct GatewayExecuteResult: Codable, Equatable, Sendable {
   public var text: String
   public var exitCode: Int32?
   public var usage: GatewayUsage?
+  public var sessionId: String?
 
   public init(
     protocolVersion: String = GatewayProtocolVersion.current,
@@ -159,7 +377,8 @@ public struct GatewayExecuteResult: Codable, Equatable, Sendable {
     model: String,
     text: String,
     exitCode: Int32? = nil,
-    usage: GatewayUsage? = nil
+    usage: GatewayUsage? = nil,
+    sessionId: String? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.vendor = vendor
@@ -167,6 +386,7 @@ public struct GatewayExecuteResult: Codable, Equatable, Sendable {
     self.text = text
     self.exitCode = exitCode
     self.usage = usage
+    self.sessionId = sessionId
   }
 }
 

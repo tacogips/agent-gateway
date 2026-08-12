@@ -21,10 +21,18 @@ reading until it receives a terminal response with the matching `id`.
 ```
 
 `vendor` is required and is never inferred from `model`. Supported values are
-`claude-code`, `codex`, `cursor`, `openai`, `anthropic`, `gemini`, and
+`claude-code`, `codex`, `cursor`, `cursor-api`, `openai`, `anthropic`, `gemini`, and
 `openrouter`. Optional parameters include `systemPrompt`, `workingDirectory`,
 `executable`, `arguments`, `providerName`, `apiKeyEnvironment`, `baseURL`, and
-`maxTokens`.
+`maxTokens`. Session-aware clients send `sessionMode` (`new` or `reuse`) and
+`sessionId`. Cursor Cloud Agent settings use the typed `cursorAPI` object with
+`repositoryURL`, `startingRef`, `workOnCurrentBranch`, and `autoCreatePR` fields.
+Image-capable vendors receive typed `images` entries containing either a local
+`filePath` or a `mimeType` plus `dataBase64`; the gateway owns file loading,
+size validation, and vendor-specific request encoding.
+`retryPolicy` is typed and bounded; streaming API calls retry transient HTTP or
+transport failures only before an event has been published, preventing replayed
+text deltas.
 
 Credentials are referenced only by environment-variable name. The request may
 contain the provider name and Base URL but must never contain a credential
@@ -42,7 +50,8 @@ The server emits zero or more notifications before the terminal response:
 `lifecycle`, `assistant`, `thinking`, `tool`, `usage`, and `vendor`.
 `vendorPayload` may carry the original vendor JSON line as an escaped string;
 this preserves evidence without allowing nested vendor objects to redefine the
-gateway envelope.
+gateway envelope. `sessionId`, when present, is the vendor-owned resumable
+session identifier and is repeated in the terminal result.
 
 ## Terminal response and errors
 
@@ -73,3 +82,11 @@ agent-gateway client \
 Programmatic clients should normally keep one server process alive and write
 requests directly. Riela uses this mode and converts `agent/event`
 notifications into its existing backend-event stream.
+
+## Readiness request
+
+Clients may send `agent/readiness` with typed `vendor`, `executable`, and
+`apiKeyEnvironment` parameters. The single terminal response reports `ready`
+or `unavailable`. CLI readiness checks resolve the executable without launching
+the vendor; API readiness checks credential presence without sending a network
+request.

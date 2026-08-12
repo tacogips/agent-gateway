@@ -22,7 +22,7 @@ public struct AppCommand: Sendable {
       return usage
     }
 
-    if arguments.first == "server" || arguments.first == "client" {
+    if arguments.first == "server" || arguments.first == "client" || arguments.first == "readiness" {
       return ""
     }
 
@@ -40,6 +40,9 @@ public struct AppCommand: Sendable {
     case "client":
       let request = try clientRequest(Array(arguments.dropFirst()))
       return try GatewaySubprocessClient().run(request: request)
+    case "readiness":
+      let request = try readinessRequest(Array(arguments.dropFirst()))
+      return try GatewaySubprocessClient().run(request: request)
     default:
       return 0
     }
@@ -51,9 +54,10 @@ public struct AppCommand: Sendable {
 
       agent-gateway server
       agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options] [-- <vendor-args>]
+      agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway --help
 
-    Vendors: claude-code, codex, cursor, openai, anthropic, gemini, openrouter
+    Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
 
     Protocol: JSON-RPC 2.0-shaped messages, one JSON object per line. The server
     reads agent/execute requests from stdin and writes agent/event notifications
@@ -61,8 +65,8 @@ public struct AppCommand: Sendable {
     """
   }
 
-  private func clientRequest(_ arguments: [String]) throws -> GatewayRPCRequest {
-    var values: [String: String] = [:]
+  func clientRequest(_ arguments: [String]) throws -> GatewayRPCRequest {
+    var options = GatewayClientOptions()
     var vendorArguments: [String] = []
     var index = 0
     while index < arguments.count {
@@ -73,29 +77,105 @@ public struct AppCommand: Sendable {
       let key = arguments[index]
       guard key.hasPrefix("--") else { throw Error.unknownArgument(key) }
       guard index + 1 < arguments.count else { throw Error.missingValue(key) }
-      values[key] = arguments[index + 1]
+      try options.assign(key: key, value: arguments[index + 1])
       index += 2
     }
-    guard let vendorValue = values["--vendor"], let vendor = GatewayVendor(rawValue: vendorValue) else {
+    guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
       throw Error.missingValue("--vendor")
     }
-    guard let model = values["--model"] else { throw Error.missingValue("--model") }
-    guard let prompt = values["--prompt"] else { throw Error.missingValue("--prompt") }
+    guard let model = options.model else { throw Error.missingValue("--model") }
+    guard let prompt = options.prompt else { throw Error.missingValue("--prompt") }
     return GatewayRPCRequest(
       id: UUID().uuidString,
       params: GatewayExecuteParams(
         vendor: vendor,
         model: model,
         prompt: prompt,
-        systemPrompt: values["--system"],
-        workingDirectory: values["--working-directory"],
-        executable: values["--executable"],
+        systemPrompt: options.systemPrompt,
+        workingDirectory: options.workingDirectory,
+        executable: options.executable,
         arguments: vendorArguments,
-        providerName: values["--provider-name"],
-        apiKeyEnvironment: values["--api-key-environment"],
-        baseURL: values["--base-url"],
-        maxTokens: values["--max-tokens"].flatMap(Int.init)
+        providerName: options.providerName,
+        apiKeyEnvironment: options.apiKeyEnvironment,
+        baseURL: options.baseURL,
+        maxTokens: options.maxTokens,
+        sessionMode: options.sessionId == nil ? .new : .reuse,
+        sessionId: options.sessionId,
+        cursorAPI: options.cursorAPIOptions
       )
     )
+  }
+
+  func readinessRequest(_ arguments: [String]) throws -> GatewayReadinessRPCRequest {
+    var options = GatewayClientOptions()
+    var index = 0
+    while index < arguments.count {
+      let key = arguments[index]
+      guard key.hasPrefix("--") else { throw Error.unknownArgument(key) }
+      guard index + 1 < arguments.count else { throw Error.missingValue(key) }
+      try options.assign(key: key, value: arguments[index + 1])
+      index += 2
+    }
+    guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
+      throw Error.missingValue("--vendor")
+    }
+    return GatewayReadinessRPCRequest(
+      id: UUID().uuidString,
+      params: GatewayReadinessParams(
+        vendor: vendor,
+        executable: options.executable,
+        apiKeyEnvironment: options.apiKeyEnvironment
+      )
+    )
+  }
+}
+
+struct GatewayClientOptions: Equatable, Sendable {
+  var vendor: String?
+  var model: String?
+  var prompt: String?
+  var systemPrompt: String?
+  var workingDirectory: String?
+  var executable: String?
+  var providerName: String?
+  var apiKeyEnvironment: String?
+  var baseURL: String?
+  var maxTokens: Int?
+  var sessionId: String?
+  var cursorRepositoryURL: String?
+  var cursorStartingRef: String?
+  var cursorWorkOnCurrentBranch: Bool?
+  var cursorAutoCreatePR: Bool?
+
+  var cursorAPIOptions: GatewayCursorAPIOptions? {
+    guard cursorRepositoryURL != nil || cursorStartingRef != nil
+      || cursorWorkOnCurrentBranch != nil || cursorAutoCreatePR != nil else { return nil }
+    return GatewayCursorAPIOptions(
+      repositoryURL: cursorRepositoryURL,
+      startingRef: cursorStartingRef,
+      workOnCurrentBranch: cursorWorkOnCurrentBranch,
+      autoCreatePR: cursorAutoCreatePR
+    )
+  }
+
+  mutating func assign(key: String, value: String) throws {
+    switch key {
+    case "--vendor": vendor = value
+    case "--model": model = value
+    case "--prompt": prompt = value
+    case "--system": systemPrompt = value
+    case "--working-directory": workingDirectory = value
+    case "--executable": executable = value
+    case "--provider-name": providerName = value
+    case "--api-key-environment": apiKeyEnvironment = value
+    case "--base-url": baseURL = value
+    case "--max-tokens": maxTokens = Int(value)
+    case "--session-id": sessionId = value
+    case "--cursor-repository-url": cursorRepositoryURL = value
+    case "--cursor-starting-ref": cursorStartingRef = value
+    case "--cursor-work-on-current-branch": cursorWorkOnCurrentBranch = Bool(value)
+    case "--cursor-auto-create-pr": cursorAutoCreatePR = Bool(value)
+    default: throw AppCommand.Error.unknownArgument(key)
+    }
   }
 }
