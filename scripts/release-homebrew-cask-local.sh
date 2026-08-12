@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 artifact_name="agent-gateway"
-github_repository="user/repo"
+github_repository="tacogips/agent-gateway"
 
 usage() {
   cat <<EOF

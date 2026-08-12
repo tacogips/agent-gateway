@@ -56,7 +56,7 @@ main() {
   version="$1"
   output="${2:-$repo_root/Formula/$artifact_name.rb}"
   release_dir="${RELEASE_DIR:-$repo_root/dist/homebrew}"
-  release_base_url="${RELEASE_BASE_URL:-https://github.com/user/repo/releases/download/v$version}"
+  release_base_url="${RELEASE_BASE_URL:-https://github.com/tacogips/agent-gateway/releases/download/v$version}"
 
   local darwin_arm64_sha darwin_x64_sha
   darwin_arm64_sha="$(sha_for_target "$version" darwin-arm64 "$release_dir")"
@@ -64,9 +64,9 @@ main() {
 
   mkdir -p "$(dirname "$output")"
   cat > "$output" <<EOF
-class App < Formula
-  desc "A Swift command line tool"
-  homepage "https://github.com/user/repo"
+class AgentGateway < Formula
+  desc "ACP stdio agent that routes prompts to AI vendor CLIs and APIs"
+  homepage "https://github.com/tacogips/agent-gateway"
   version "$version"
   license "MIT"
 
