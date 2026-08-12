@@ -8,18 +8,24 @@ let package = Package(
     .macOS(.v14)
   ],
   products: [
-    .library(name: "AppCore", targets: ["AppCore"]),
-    .executable(name: "agent-gateway", targets: ["AppCLI"])
+    .library(name: "AgentGateway", targets: ["AgentGateway"]),
+    .library(name: "AgentGatewayAppCore", targets: ["AgentGatewayAppCore"]),
+    .executable(name: "agent-gateway", targets: ["AgentGatewayCLI"])
   ],
   targets: [
-    .target(name: "AppCore"),
+    .target(name: "AgentGateway"),
+    .target(name: "AgentGatewayAppCore", dependencies: ["AgentGateway"]),
     .executableTarget(
-      name: "AppCLI",
-      dependencies: ["AppCore"]
+      name: "AgentGatewayCLI",
+      dependencies: ["AgentGatewayAppCore"]
     ),
     .testTarget(
-      name: "AppCoreTests",
-      dependencies: ["AppCore"]
+      name: "AgentGatewayAppCoreTests",
+      dependencies: ["AgentGatewayAppCore"]
+    ),
+    .testTarget(
+      name: "AgentGatewayTests",
+      dependencies: ["AgentGateway", "AgentGatewayAppCore"]
     )
   ],
   swiftLanguageModes: [.v6]

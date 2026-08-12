@@ -1,5 +1,5 @@
 import Testing
-@testable import AppCore
+@testable import AgentGatewayAppCore
 
 @Test func commandReportsVersion() throws {
   let command = AppCommand(arguments: ["--version"])
