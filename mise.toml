@@ -1,0 +1,86 @@
+min_version = "2026.8.3"
+
+[[hooks.enter]]
+shell = "bash"
+script = '''
+if command -v kinko >/dev/null 2>&1 && kinko hook --help >/dev/null 2>&1; then
+  eval "$(kinko --path "$MISE_PROJECT_ROOT" hook enter bash)"
+fi
+'''
+
+[[hooks.leave]]
+shell = "bash"
+script = '''
+if command -v kinko >/dev/null 2>&1 && kinko hook --help >/dev/null 2>&1; then
+  eval "$(kinko hook leave bash)"
+fi
+'''
+
+[tools]
+swift = "6.0"
+swiftlint = "latest"
+gitleaks = "latest"
+
+[tasks.default]
+description = "Show available tasks"
+run = "mise tasks ls"
+
+[tasks.build]
+description = "Build the Swift package"
+run = "swift build"
+
+[tasks.run]
+description = "Run the executable"
+run = "swift run agent-gateway"
+
+[tasks.test]
+description = "Run Swift tests"
+run = "swift test"
+
+[tasks.clean]
+description = "Clean SwiftPM and release artifacts"
+run = "rm -rf .build dist release"
+
+[tasks.lint]
+description = "Run SwiftLint"
+run = "swiftlint"
+
+[tasks."build:homebrew"]
+description = "Build Homebrew formula archives"
+run = "scripts/build-homebrew-release.sh"
+
+[tasks."homebrew:formula"]
+description = "Render the Homebrew formula"
+run = "scripts/render-homebrew-formula.sh"
+
+[tasks."homebrew:tap-formula"]
+description = "Render the formula into the default sibling tap"
+run = '''
+if [ "$#" -eq 0 ]; then
+  echo "usage: mise run homebrew:tap-formula -- <version>" >&2
+  exit 2
+fi
+scripts/render-homebrew-formula.sh "$1" "../homebrew-tap/Formula/agent-gateway.rb"
+'''
+
+[tasks."build:homebrew-cask"]
+description = "Build signed and notarized Homebrew Cask DMGs"
+run = "scripts/build-homebrew-cask-release.sh"
+
+[tasks."homebrew:cask"]
+description = "Render the Homebrew cask"
+run = "scripts/render-homebrew-cask.sh"
+
+[tasks."homebrew:tap-cask"]
+description = "Render the cask into the default sibling tap"
+run = '''
+if [ "$#" -eq 0 ]; then
+  echo "usage: mise run homebrew:tap-cask -- <version>" >&2
+  exit 2
+fi
+scripts/render-homebrew-cask.sh "$1" "../homebrew-tap/Casks/agent-gateway.rb"
+'''
+
+[tasks."release:homebrew-cask-local"]
+description = "Build, notarize, upload, and render a cask for a release tag"
+run = "scripts/release-homebrew-cask-local.sh"
