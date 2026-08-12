@@ -23,13 +23,13 @@ private struct ScriptedExecutor: GatewayExecuting {
     for step in steps {
       switch step {
       case .delta(let text):
-        emit("assistant.delta", .assistant, text, nil, "{}", nil)
+        emit(GatewayEvent(type: "assistant.delta", channel: .assistant, textDelta: text))
       case .snapshot(let text):
-        emit("assistant.message", .assistant, nil, text, "{}", nil)
+        emit(GatewayEvent(type: "assistant.message", channel: .assistant, textSnapshot: text))
       case .thinking(let text):
-        emit("thinking.delta", .thinking, text, nil, "{}", nil)
+        emit(GatewayEvent(type: "thinking.delta", channel: .thinking, textDelta: text))
       case .vendorEvent(let payload):
-        emit("vendor.event", .vendor, nil, nil, payload, nil)
+        emit(GatewayEvent(type: "vendor.event", channel: .vendor, vendorPayload: payload))
       }
     }
     return GatewayExecuteResult(
@@ -46,9 +46,30 @@ private struct HangingExecutor: GatewayExecuting {
   func execute(
     _ params: GatewayExecuteParams, emit: @escaping GatewayEventEmitter
   ) async throws -> GatewayExecuteResult {
-    emit("assistant.delta", .assistant, "partial", nil, "{}", nil)
+    emit(GatewayEvent(type: "assistant.delta", channel: .assistant, textDelta: "partial"))
     try await Task.sleep(for: .seconds(30))
     return GatewayExecuteResult(vendor: params.vendor, model: params.model, text: "never")
+  }
+}
+
+private actor ModelAwareExecutor: GatewayExecuting, GatewayModelListing {
+  private(set) var promptedModels: [String] = []
+  private(set) var listCalls = 0
+
+  func execute(
+    _ params: GatewayExecuteParams, emit: @escaping GatewayEventEmitter
+  ) async throws -> GatewayExecuteResult {
+    promptedModels.append(params.model)
+    emit(GatewayEvent(type: "assistant.delta", channel: .assistant, textDelta: "ok"))
+    return GatewayExecuteResult(vendor: params.vendor, model: params.model, text: "ok")
+  }
+
+  func models(_ params: GatewayModelCatalogParams) async throws -> GatewayModelCatalogResult {
+    listCalls += 1
+    return GatewayModelCatalogResult(vendor: params.vendor, models: [
+      GatewayModelInfo(modelId: "gpt-5"),
+      GatewayModelInfo(modelId: "gpt-5-mini", name: "GPT-5 mini")
+    ])
   }
 }
 
@@ -78,15 +99,11 @@ private func makeConnectedGateway(
   executor: any GatewayExecuting,
   defaults: GatewayAgentDefaults = GatewayAgentDefaults(vendor: .codex, model: "gpt-5")
 ) async -> (ACPClientConnection, RecordingDelegate) {
-  let (clientSide, agentSide) = ACPInMemoryTransport.pair()
-  let server = ACPAgentServer(
-    agent: GatewayACPAgent(defaults: defaults, executor: executor),
-    transport: agentSide
-  )
-  await server.start()
   let delegate = RecordingDelegate()
-  let client = ACPClientConnection(transport: clientSide, delegate: delegate)
-  await client.start()
+  let (client, _) = await ACPClientConnection.inProcess(
+    agent: GatewayACPAgent(defaults: defaults, executor: executor),
+    delegate: delegate
+  )
   return (client, delegate)
 }
 
@@ -167,6 +184,45 @@ private func makeConnectedGateway(
   #expect(meta?["vendor"]?.stringValue == "claude-code")
   #expect(meta?["model"]?.stringValue == "claude-sonnet-5")
   _ = try await client.prompt(ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hi")]))
+  await client.stop()
+}
+
+@Test func apiVendorSessionsAdvertiseModelsAndAcceptSetModel() async throws {
+  let executor = ModelAwareExecutor()
+  let (client, _) = await makeConnectedGateway(
+    executor: executor,
+    defaults: GatewayAgentDefaults(vendor: .openAI, model: "gpt-5")
+  )
+  _ = try await client.initialize()
+  let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
+  let models = try #require(session.models)
+  #expect(models.currentModelId == "gpt-5")
+  #expect(models.availableModels.map(\.modelId) == ["gpt-5", "gpt-5-mini"])
+  #expect(models.availableModels[1].name == "GPT-5 mini")
+
+  try await client.setModel(sessionId: session.sessionId, modelId: "gpt-5-mini")
+  _ = try await client.prompt(ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hi")]))
+  #expect(await executor.promptedModels == ["gpt-5-mini"])
+
+  // A second session reuses the cached model list instead of re-fetching.
+  let second = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
+  #expect(second.models?.currentModelId == "gpt-5")
+  #expect(await executor.listCalls == 1)
+
+  await #expect(throws: ACPError.self) {
+    try await client.setModel(sessionId: "missing", modelId: "gpt-5")
+  }
+  await client.stop()
+}
+
+@Test func cliVendorSessionsDoNotAdvertiseModels() async throws {
+  let (client, _) = await makeConnectedGateway(
+    executor: ScriptedExecutor(steps: [], resultText: ""),
+    defaults: GatewayAgentDefaults(vendor: .claudeCode, model: "claude-sonnet-5")
+  )
+  _ = try await client.initialize()
+  let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
+  #expect(session.models == nil)
   await client.stop()
 }
 

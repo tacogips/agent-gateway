@@ -75,6 +75,9 @@ public actor GatewayACPAgent: ACPAgent {
   private let executor: any GatewayExecuting
   private let defaults: GatewayAgentDefaults
   private var sessions: [String: SessionState] = [:]
+  /// Vendor model lists fetched for `session/new`, keyed by
+  /// vendor/baseURL/credential so repeated sessions skip the network.
+  private var modelListCache: [String: [ACPModelInfo]] = [:]
 
   public init(
     defaults: GatewayAgentDefaults = GatewayAgentDefaults(),
@@ -120,6 +123,7 @@ public actor GatewayACPAgent: ACPAgent {
     )
     return ACPNewSessionResponse(
       sessionId: sessionId,
+      models: await sessionModels(for: configuration),
       meta: .object([
         "agentGateway": .object([
           "vendor": .string(vendor.rawValue),
@@ -127,6 +131,56 @@ public actor GatewayACPAgent: ACPAgent {
         ])
       ])
     )
+  }
+
+  public func setModel(_ request: ACPSetSessionModelRequest) async throws {
+    guard sessions[request.sessionId] != nil else {
+      throw ACPError.invalidParams("unknown session '\(request.sessionId)'")
+    }
+    guard !request.modelId.isEmpty else {
+      throw ACPError.invalidParams("modelId must not be empty")
+    }
+    // Model ids are pass-through vendor strings, so ids outside the
+    // advertised list are accepted; the vendor validates at prompt time.
+    sessions[request.sessionId]?.configuration.model = request.modelId
+  }
+
+  /// Best-effort ACP model advertisement for `session/new`. Only vendors
+  /// with a listing endpoint participate; failures and slow responses
+  /// (over 3 seconds) degrade to no advertisement instead of failing or
+  /// stalling session creation. Successful lists are cached per
+  /// vendor/baseURL/credential.
+  private func sessionModels(for configuration: GatewayAgentDefaults) async -> ACPSessionModelState? {
+    guard let vendor = configuration.vendor, !vendor.isCLI,
+          let currentModel = configuration.model,
+          let listing = executor as? any GatewayModelListing else { return nil }
+    let cacheKey = [
+      vendor.rawValue, configuration.baseURL ?? "", configuration.apiKeyEnvironment ?? ""
+    ].joined(separator: "|")
+    if let cached = modelListCache[cacheKey] {
+      return ACPSessionModelState(availableModels: cached, currentModelId: currentModel)
+    }
+    let params = GatewayModelCatalogParams(
+      vendor: vendor,
+      apiKeyEnvironment: configuration.apiKeyEnvironment,
+      baseURL: configuration.baseURL
+    )
+    let result = await withTaskGroup(of: GatewayModelCatalogResult?.self) { group in
+      group.addTask { try? await listing.models(params) }
+      group.addTask {
+        try? await Task.sleep(for: .seconds(3))
+        return nil
+      }
+      let first = await group.next() ?? nil
+      group.cancelAll()
+      return first
+    }
+    guard let result, !result.models.isEmpty else { return nil }
+    let models = result.models.map {
+      ACPModelInfo(modelId: $0.modelId, name: $0.name ?? $0.modelId, description: $0.description)
+    }
+    modelListCache[cacheKey] = models
+    return ACPSessionModelState(availableModels: models, currentModelId: currentModel)
   }
 
   public func prompt(
@@ -154,6 +208,11 @@ public actor GatewayACPAgent: ACPAgent {
     let task = Task { try await executor.execute(params, emit: bridge.emitter) }
     sessions[request.sessionId]?.activeTask = task
     defer { sessions[request.sessionId]?.activeTask = nil }
+    // A cancel notification can land between the task launch and the
+    // activeTask assignment above; honor it instead of losing it.
+    if sessions[request.sessionId]?.cancelRequested == true {
+      task.cancel()
+    }
 
     do {
       let result = try await task.value
@@ -270,19 +329,17 @@ final class GatewayACPStreamBridge: @unchecked Sendable {
   }
 
   var emitter: GatewayEventEmitter {
-    { [self] _, channel, delta, snapshot, _, _ in
-      consume(channel: channel, delta: delta, snapshot: snapshot)
-    }
+    { [self] event in consume(event) }
   }
 
-  func consume(channel: GatewayEventChannel, delta: String?, snapshot: String?) {
+  func consume(_ event: GatewayEvent) {
     lock.withLock {
-      switch channel {
+      switch event.channel {
       case .assistant:
-        if let delta, !delta.isEmpty {
+        if let delta = event.textDelta, !delta.isEmpty {
           accumulated += delta
           yield(.agentMessageChunk(.text(delta)))
-        } else if let snapshot, !snapshot.isEmpty {
+        } else if let snapshot = event.textSnapshot, !snapshot.isEmpty {
           guard !accumulated.hasSuffix(snapshot) else { return }
           if snapshot.hasPrefix(accumulated), !accumulated.isEmpty {
             let suffix = String(snapshot.dropFirst(accumulated.count))
@@ -294,7 +351,7 @@ final class GatewayACPStreamBridge: @unchecked Sendable {
           }
         }
       case .thinking:
-        if let text = delta ?? snapshot, !text.isEmpty {
+        if let text = event.textDelta ?? event.textSnapshot, !text.isEmpty {
           yield(.agentThoughtChunk(.text(text)))
         }
       case .lifecycle, .tool, .usage, .vendor:

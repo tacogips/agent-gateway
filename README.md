@@ -53,6 +53,67 @@ drive any external ACP agent. Vendor selection is explicit and is not
 inferred from the model. See `design-docs/specs/acp-stdio-protocol.md`
 for the protocol contract.
 
+## ACP client library: streaming or aggregated
+
+The `ACP` product is a generic ACP client/agent library. A prompt turn can
+be consumed either as a stream or as one aggregated response — choose per
+call; both wrap the same request, and the aggregated form is built on the
+streaming form:
+
+```swift
+import ACP
+import AgentGatewayAppCore
+
+// Host the gateway agent in-process (no subprocess, ACP over memory).
+let (client, server) = await ACPClientConnection.inProcess(
+  agent: GatewayACPAgent(defaults: GatewayAgentDefaults(
+    vendor: .claudeCode, model: "claude-sonnet-5"
+  ))
+)
+_ = try await client.initialize()
+let session = try await client.newSession(ACPNewSessionRequest(cwd: "/work"))
+let request = ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hi")])
+
+// Option 1: stream each session/update as it arrives.
+for try await event in client.promptStream(request) {
+  switch event {
+  case .update(.agentMessageChunk(.text(let chunk))): print(chunk.text)
+  case .response(let response): print(response.stopReason)
+  default: break
+  }
+}
+
+// Option 2: await the aggregated turn.
+let result = try await client.promptCollecting(request)
+print(result.messageText, result.thoughtText, result.response.stopReason)
+```
+
+`ACPClientConnection(transport:delegate:)` connects the same API to any
+external ACP agent over stdio pipes (`ACPFileHandleTransport`).
+
+## Vendor model catalog
+
+List an API vendor's available models from the CLI:
+
+```bash
+agent-gateway models --vendor openrouter --api-key-environment OPENROUTER_API_KEY
+```
+
+or from the library through `GatewayModelListing`:
+
+```swift
+let catalog = try await ProductionGatewayExecutor().models(
+  GatewayModelCatalogParams(vendor: .openAI)
+)
+```
+
+API-vendor ACP sessions also advertise the list in the `session/new`
+response's standard `models` field (`availableModels` / `currentModelId`),
+and `session/set_model` (`ACPClientConnection.setModel(sessionId:modelId:)`)
+switches the model for subsequent prompts. CLI vendors (claude-code, codex,
+cursor) have no machine-readable model enumeration and return an explicit
+unsupported error instead of a guessed list.
+
 ## Provider routing library
 
 ```swift

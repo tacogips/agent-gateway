@@ -31,16 +31,35 @@ Every vendor token stream is represented as a JSONL stream of ACP
 `session/update` notifications:
 
 - Streaming vendors (OpenAI, Anthropic, Gemini, OpenRouter SSE; cursor-agent
-  deltas) map each text delta to one `agent_message_chunk`.
-- Snapshot vendors (Claude Code assistant messages, Codex `agent_message`
-  items, Cursor Cloud Agents) emit whole-message chunks; growing snapshots
-  emit only the suffix delta, and a trailing result echo of already-streamed
-  text is suppressed so text is never duplicated.
-- Reasoning output maps to `agent_thought_chunk`.
+  deltas) map each text delta to one `agent_message_chunk`. Claude Code runs
+  with `--include-partial-messages`, so its `stream_event` text deltas also
+  arrive token-by-token instead of per completed message.
+- Snapshot vendors (Codex `agent_message` items, Cursor Cloud Agents) emit
+  whole-message chunks; growing snapshots emit only the suffix delta, and a
+  trailing echo of already-streamed text (e.g. Claude Code's completed
+  assistant message and `result` events) is suppressed so text is never
+  duplicated.
+- Reasoning output maps to `agent_thought_chunk`: Claude Code / Anthropic
+  `thinking_delta`, OpenAI `response.reasoning_summary_text.delta`,
+  OpenRouter `delta.reasoning`, and Codex `reasoning` items.
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hel"}}}}
 ```
+
+## Model advertisement and selection
+
+For API vendors, the `session/new` response includes the spec's `models`
+slot (`SessionModelState`): `availableModels` fetched from the vendor's
+model-listing endpoint and `currentModelId`. The fetch is best-effort — a
+failure or a response slower than 3 seconds omits the field rather than
+failing session creation — and successful lists are cached per
+vendor/baseURL/credential. `session/set_model` switches the session's model
+for subsequent prompts; model ids are pass-through vendor strings, so ids
+outside the advertised list are accepted and validated by the vendor at
+prompt time. CLI vendors (claude-code, codex, cursor) have no
+machine-readable enumeration: their sessions omit `models`, and the
+`agent-gateway models` subcommand rejects them with error `-32020`.
 
 ## Vendor selection via `_meta`
 
@@ -58,9 +77,11 @@ Supported keys: `vendor`, `model`, `systemPrompt`, `executable`, `arguments`,
 referenced only by environment-variable name.
 
 The `session/prompt` response `_meta.agentGateway` carries `vendor`, `model`,
-`usage` (token counts when the vendor reports them), and `vendorSessionId`
-for resumption. Within one ACP session, consecutive prompts automatically
-reuse the vendor session (`--resume`/`exec resume`/`previous_response_id`).
+`usage` (token counts when the vendor reports them; partial reports such as
+Anthropic's split input/output counts are merged, and CLI vendors report
+through their `result`/`turn.completed` events), and `vendorSessionId` for
+resumption. Within one ACP session, consecutive prompts automatically reuse
+the vendor session (`--resume`/`exec resume`/`previous_response_id`).
 
 ## Errors
 

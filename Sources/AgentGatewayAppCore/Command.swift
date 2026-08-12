@@ -23,7 +23,7 @@ public struct AppCommand: Sendable {
       return usage
     }
 
-    if arguments.first == "server" || arguments.first == "client" || arguments.first == "readiness" {
+    if ["server", "client", "readiness", "models"].contains(arguments.first) {
       return ""
     }
 
@@ -50,13 +50,28 @@ public struct AppCommand: Sendable {
     case "readiness":
       let params = try readinessParams(Array(arguments.dropFirst()))
       let result = ProductionGatewayExecutor().readiness(params)
-      let encoder = JSONEncoder()
-      encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-      FileHandle.standardOutput.write(try encoder.encode(result) + Data([10]))
+      try writeJSONLine(result)
       return result.status == .ready ? 0 : 1
+    case "models":
+      let params = try modelCatalogParams(Array(arguments.dropFirst()))
+      do {
+        try writeJSONLine(try await ProductionGatewayExecutor().models(params))
+        return 0
+      } catch let error as GatewayRPCError {
+        FileHandle.standardError.write(
+          Data("model listing failed (\(error.code)): \(error.message)\n".utf8)
+        )
+        return 1
+      }
     default:
       return 0
     }
+  }
+
+  private func writeJSONLine<T: Encodable>(_ value: T) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    FileHandle.standardOutput.write(try encoder.encode(value) + Data([10]))
   }
 
   public var usage: String {
@@ -67,6 +82,7 @@ public struct AppCommand: Sendable {
       agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options] [-- <vendor-args>]
       agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
+      agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>]
       agent-gateway --help
 
     Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
@@ -81,10 +97,29 @@ public struct AppCommand: Sendable {
     echoes the agent's raw ACP JSONL messages to stdout. `--prompt -` reads
     the prompt text from stdin; repeatable `--image <path>` and
     `--image-data <mimeType>:<base64>` attach ACP image content blocks.
+    `models` lists an API vendor's available models as JSON; API-vendor ACP
+    sessions also advertise them in the session/new response (`models`) and
+    accept session/set_model. CLI vendors do not support enumeration.
     """
   }
 
-  func serverDefaults(_ arguments: [String]) throws -> GatewayAgentDefaults {
+  func modelCatalogParams(_ arguments: [String]) throws -> GatewayModelCatalogParams {
+    let (options, _) = try parseOptions(arguments)
+    guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
+      throw Error.missingValue("--vendor")
+    }
+    return GatewayModelCatalogParams(
+      vendor: vendor,
+      apiKeyEnvironment: options.apiKeyEnvironment,
+      baseURL: options.baseURL
+    )
+  }
+
+  /// Parses `--key value` pairs into `GatewayClientOptions`; everything
+  /// after a literal `--` is returned untouched as vendor/agent arguments.
+  private func parseOptions(
+    _ arguments: [String]
+  ) throws -> (options: GatewayClientOptions, vendorArguments: [String]) {
     var options = GatewayClientOptions()
     var vendorArguments: [String] = []
     var index = 0
@@ -99,6 +134,11 @@ public struct AppCommand: Sendable {
       try options.assign(key: key, value: arguments[index + 1])
       index += 2
     }
+    return (options, vendorArguments)
+  }
+
+  func serverDefaults(_ arguments: [String]) throws -> GatewayAgentDefaults {
+    let (options, vendorArguments) = try parseOptions(arguments)
     if let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) == nil {
       throw Error.missingValue("--vendor")
     }
@@ -106,20 +146,7 @@ public struct AppCommand: Sendable {
   }
 
   func clientOptions(_ arguments: [String]) throws -> GatewayACPClientOptions {
-    var options = GatewayClientOptions()
-    var vendorArguments: [String] = []
-    var index = 0
-    while index < arguments.count {
-      if arguments[index] == "--" {
-        vendorArguments = Array(arguments.dropFirst(index + 1))
-        break
-      }
-      let key = arguments[index]
-      guard key.hasPrefix("--") else { throw Error.unknownArgument(key) }
-      guard index + 1 < arguments.count else { throw Error.missingValue(key) }
-      try options.assign(key: key, value: arguments[index + 1])
-      index += 2
-    }
+    let (options, vendorArguments) = try parseOptions(arguments)
     let promptBlocksFromStdin = options.promptBlocksSource == "-"
     guard let prompt = options.prompt ?? (promptBlocksFromStdin ? "" : nil) else {
       throw Error.missingValue("--prompt")
@@ -150,15 +177,7 @@ public struct AppCommand: Sendable {
   }
 
   func readinessParams(_ arguments: [String]) throws -> GatewayReadinessParams {
-    var options = GatewayClientOptions()
-    var index = 0
-    while index < arguments.count {
-      let key = arguments[index]
-      guard key.hasPrefix("--") else { throw Error.unknownArgument(key) }
-      guard index + 1 < arguments.count else { throw Error.missingValue(key) }
-      try options.assign(key: key, value: arguments[index + 1])
-      index += 2
-    }
+    let (options, _) = try parseOptions(arguments)
     guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
       throw Error.missingValue("--vendor")
     }

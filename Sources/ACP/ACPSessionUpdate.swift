@@ -39,32 +39,77 @@ public enum ACPToolCallStatus: String, Codable, Sendable {
   case failed
 }
 
+/// File modification shown as a tool-call `diff` content item.
+public struct ACPToolCallDiff: Codable, Equatable, Sendable {
+  public var path: String
+  public var oldText: String?
+  public var newText: String
+
+  public init(path: String, oldText: String? = nil, newText: String) {
+    self.path = path
+    self.oldText = oldText
+    self.newText = newText
+  }
+}
+
 public enum ACPToolCallContent: Codable, Equatable, Sendable {
   case content(ACPContentBlock)
+  case diff(ACPToolCallDiff)
+  /// Embedded terminal output (`terminalId` references a client terminal).
+  case terminal(terminalId: String)
+  /// Forward-compatible fallback carrying the raw JSON of an unknown type.
+  case other(ACPJSONValue)
 
   private enum CodingKeys: String, CodingKey {
     case type
     case content
+    case terminalId
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    let type = try container.decode(String.self, forKey: .type)
-    guard type == "content" else {
-      throw DecodingError.dataCorruptedError(
-        forKey: .type, in: container, debugDescription: "unsupported tool call content type '\(type)'"
-      )
+    switch try container.decode(String.self, forKey: .type) {
+    case "content":
+      self = .content(try container.decode(ACPContentBlock.self, forKey: .content))
+    case "diff":
+      self = .diff(try ACPToolCallDiff(from: decoder))
+    case "terminal":
+      self = .terminal(terminalId: try container.decode(String.self, forKey: .terminalId))
+    default:
+      self = .other(try ACPJSONValue(from: decoder))
     }
-    self = .content(try container.decode(ACPContentBlock.self, forKey: .content))
   }
 
   public func encode(to encoder: any Encoder) throws {
+    if case .other(let value) = self {
+      try value.encode(to: encoder)
+      return
+    }
     var container = encoder.container(keyedBy: CodingKeys.self)
     switch self {
     case .content(let block):
       try container.encode("content", forKey: .type)
       try container.encode(block, forKey: .content)
+    case .diff(let diff):
+      try container.encode("diff", forKey: .type)
+      try diff.encode(to: encoder)
+    case .terminal(let terminalId):
+      try container.encode("terminal", forKey: .type)
+      try container.encode(terminalId, forKey: .terminalId)
+    case .other:
+      preconditionFailure("handled above")
     }
+  }
+}
+
+/// File location a tool call touches, for client "follow along" features.
+public struct ACPToolCallLocation: Codable, Equatable, Sendable {
+  public var path: String
+  public var line: Int?
+
+  public init(path: String, line: Int? = nil) {
+    self.path = path
+    self.line = line
   }
 }
 
@@ -74,6 +119,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
   public var kind: ACPToolKind?
   public var status: ACPToolCallStatus?
   public var content: [ACPToolCallContent]?
+  public var locations: [ACPToolCallLocation]?
   public var rawInput: ACPJSONValue?
   public var rawOutput: ACPJSONValue?
 
@@ -83,6 +129,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
     kind: ACPToolKind? = nil,
     status: ACPToolCallStatus? = nil,
     content: [ACPToolCallContent]? = nil,
+    locations: [ACPToolCallLocation]? = nil,
     rawInput: ACPJSONValue? = nil,
     rawOutput: ACPJSONValue? = nil
   ) {
@@ -91,6 +138,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
     self.kind = kind
     self.status = status
     self.content = content
+    self.locations = locations
     self.rawInput = rawInput
     self.rawOutput = rawOutput
   }
@@ -102,6 +150,7 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
   public var kind: ACPToolKind?
   public var status: ACPToolCallStatus?
   public var content: [ACPToolCallContent]?
+  public var locations: [ACPToolCallLocation]?
   public var rawInput: ACPJSONValue?
   public var rawOutput: ACPJSONValue?
 
@@ -111,6 +160,7 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
     kind: ACPToolKind? = nil,
     status: ACPToolCallStatus? = nil,
     content: [ACPToolCallContent]? = nil,
+    locations: [ACPToolCallLocation]? = nil,
     rawInput: ACPJSONValue? = nil,
     rawOutput: ACPJSONValue? = nil
   ) {
@@ -119,6 +169,7 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
     self.kind = kind
     self.status = status
     self.content = content
+    self.locations = locations
     self.rawInput = rawInput
     self.rawOutput = rawOutput
   }
@@ -153,6 +204,9 @@ public enum ACPSessionUpdate: Codable, Equatable, Sendable {
   case toolCall(ACPToolCall)
   case toolCallUpdate(ACPToolCallUpdate)
   case plan([ACPPlanEntry])
+  /// Forward-compatible fallback for update kinds this library does not
+  /// model (e.g. `available_commands_update`); carries the raw JSON params.
+  case other(ACPJSONValue)
 
   private enum CodingKeys: String, CodingKey {
     case sessionUpdate
@@ -177,13 +231,15 @@ public enum ACPSessionUpdate: Codable, Equatable, Sendable {
     case "plan":
       self = .plan(try container.decode([ACPPlanEntry].self, forKey: .entries))
     default:
-      throw DecodingError.dataCorruptedError(
-        forKey: .sessionUpdate, in: container, debugDescription: "unknown session update '\(kind)'"
-      )
+      self = .other(try ACPJSONValue(from: decoder))
     }
   }
 
   public func encode(to encoder: any Encoder) throws {
+    if case .other(let value) = self {
+      try value.encode(to: encoder)
+      return
+    }
     var container = encoder.container(keyedBy: CodingKeys.self)
     switch self {
     case .userMessageChunk(let content):
@@ -204,6 +260,8 @@ public enum ACPSessionUpdate: Codable, Equatable, Sendable {
     case .plan(let entries):
       try container.encode("plan", forKey: .sessionUpdate)
       try container.encode(entries, forKey: .entries)
+    case .other:
+      preconditionFailure("handled above")
     }
   }
 }

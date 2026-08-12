@@ -81,6 +81,10 @@ private struct EchoAgent: ACPAgent {
   func prompt(
     _ request: ACPPromptRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPPromptResponse {
+    await connection.sendUpdate(ACPSessionNotification(
+      sessionId: request.sessionId,
+      update: .agentThoughtChunk(.text("mulling"))
+    ))
     for block in request.prompt {
       if case .text(let content) = block {
         for character in content.text {
@@ -143,6 +147,124 @@ private actor UpdateCollector: ACPClientDelegate {
   let chunks = await collector.chunks
   #expect(chunks.joined() == "hey")
   await client.stop()
+}
+
+@Test func promptStreamYieldsOrderedUpdatesThenResponse() async throws {
+  let (client, _) = await ACPClientConnection.inProcess(agent: EchoAgent())
+  _ = try await client.initialize()
+  let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
+
+  var events: [ACPPromptEvent] = []
+  for try await event in client.promptStream(
+    ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hey")])
+  ) {
+    events.append(event)
+  }
+  #expect(events.count == 5)
+  #expect(events.first == .update(.agentThoughtChunk(.text("mulling"))))
+  #expect(events.last == .response(ACPPromptResponse(stopReason: .endTurn)))
+  let streamedText = events.compactMap {
+    if case .update(.agentMessageChunk(.text(let content))) = $0 { return content.text }
+    return nil
+  }.joined()
+  #expect(streamedText == "hey")
+  await client.stop()
+}
+
+@Test func promptCollectingAggregatesTheWholeTurn() async throws {
+  let (client, _) = await ACPClientConnection.inProcess(agent: EchoAgent())
+  _ = try await client.initialize()
+  let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
+  let result = try await client.promptCollecting(
+    ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hey")])
+  )
+  #expect(result.response.stopReason == .endTurn)
+  #expect(result.messageText == "hey")
+  #expect(result.thoughtText == "mulling")
+  #expect(result.updates.count == 4)
+  await client.stop()
+}
+
+@Test func unknownSessionUpdateKindsSurviveAsOtherAndRoundTrip() throws {
+  let payload = #"{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"web"}]}"#
+  let decoded = try JSONDecoder().decode(ACPSessionUpdate.self, from: Data(payload.utf8))
+  guard case .other(let value) = decoded else {
+    Issue.record("expected .other, got \(decoded)")
+    return
+  }
+  #expect(value["sessionUpdate"]?.stringValue == "available_commands_update")
+  let reencoded = try JSONEncoder().encode(decoded)
+  let roundTripped = try JSONDecoder().decode(ACPSessionUpdate.self, from: reencoded)
+  #expect(roundTripped == decoded)
+}
+
+@Test func toolCallContentSupportsDiffTerminalAndUnknownTypes() throws {
+  let payload = #"""
+  {"sessionUpdate":"tool_call","toolCallId":"call-9","title":"edit",
+   "locations":[{"path":"/tmp/a.swift","line":3}],
+   "content":[
+     {"type":"content","content":{"type":"text","text":"done"}},
+     {"type":"diff","path":"/tmp/a.swift","oldText":"a","newText":"b"},
+     {"type":"terminal","terminalId":"term-1"},
+     {"type":"future_thing","x":1}
+   ]}
+  """#
+  let update = try JSONDecoder().decode(ACPSessionUpdate.self, from: Data(payload.utf8))
+  guard case .toolCall(let call) = update else {
+    Issue.record("expected .toolCall, got \(update)")
+    return
+  }
+  #expect(call.locations == [ACPToolCallLocation(path: "/tmp/a.swift", line: 3)])
+  #expect(call.content?.count == 4)
+  #expect(call.content?[1] == .diff(ACPToolCallDiff(path: "/tmp/a.swift", oldText: "a", newText: "b")))
+  #expect(call.content?[2] == .terminal(terminalId: "term-1"))
+  if case .other(let value)? = call.content?[3] {
+    #expect(value["type"]?.stringValue == "future_thing")
+  } else {
+    Issue.record("expected .other fallback for unknown content type")
+  }
+  let reencoded = try JSONEncoder().encode(update)
+  #expect(try JSONDecoder().decode(ACPSessionUpdate.self, from: reencoded) == update)
+}
+
+@Test func lineBufferSplitsChunksAndFlushesTrailingBytes() {
+  var buffer = ACPLineBuffer()
+  #expect(buffer.append(Data("{\"a\":1}\n{\"b\"".utf8)) == [Data("{\"a\":1}".utf8)])
+  #expect(buffer.append(Data(":2}\n\n".utf8)) == [Data("{\"b\":2}".utf8)])
+  #expect(buffer.flush() == nil)
+  _ = buffer.append(Data("tail".utf8))
+  #expect(buffer.flush() == Data("tail".utf8))
+}
+
+@Test func setModelDefaultsToMethodNotFoundForAgentsWithoutModels() async throws {
+  let (client, _) = await ACPClientConnection.inProcess(agent: EchoAgent())
+  _ = try await client.initialize()
+  do {
+    try await client.setModel(sessionId: "echo-session", modelId: "some-model")
+    Issue.record("expected method_not_found from the default setModel")
+  } catch let error as ACPError {
+    #expect(error.code == -32601)
+  }
+  await client.stop()
+}
+
+@Test func newSessionResponseModelsRoundTripThroughWireFormat() throws {
+  let response = ACPNewSessionResponse(
+    sessionId: "sess-1",
+    models: ACPSessionModelState(
+      availableModels: [
+        ACPModelInfo(modelId: "gpt-5", name: "GPT-5"),
+        ACPModelInfo(modelId: "gpt-5-mini", name: "GPT-5 mini", description: "fast")
+      ],
+      currentModelId: "gpt-5"
+    )
+  )
+  let data = try JSONEncoder().encode(response)
+  let decoded = try JSONDecoder().decode(ACPNewSessionResponse.self, from: data)
+  #expect(decoded == response)
+  let json = try #require(String(bytes: data, encoding: .utf8))
+  #expect(json.contains(#""currentModelId":"gpt-5""#))
+  #expect(json.contains(#""availableModels""#))
 }
 
 @Test func agentServerRejectsUnknownMethodsWithMethodNotFound() async throws {

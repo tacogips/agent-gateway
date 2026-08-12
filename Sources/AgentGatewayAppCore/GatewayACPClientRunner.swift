@@ -146,28 +146,20 @@ private func promptBlocks(_ options: GatewayACPClientOptions) throws -> [ACPCont
     case .data(let mimeType, let base64):
       blocks.append(.image(ACPImageContent(data: base64, mimeType: mimeType)))
     case .filePath(let path):
-      let url = URL(fileURLWithPath: path)
-      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-      guard data.count <= 20 * 1_024 * 1_024 else {
-        throw AppCommand.Error.missingValue("--image exceeds 20 MiB: \(path)")
+      let resolved: ResolvedGatewayImage
+      do {
+        resolved = try loadGatewayImageFile(path)
+      } catch let error as GatewayRPCError {
+        throw AppCommand.Error.missingValue("--image: \(error.message)")
       }
       blocks.append(.image(ACPImageContent(
-        data: data.base64EncodedString(),
-        mimeType: gatewayClientImageMIMEType(url.pathExtension),
-        uri: url.absoluteString
+        data: resolved.dataBase64,
+        mimeType: resolved.mimeType,
+        uri: URL(fileURLWithPath: path).absoluteString
       )))
     }
   }
   return blocks
-}
-
-private func gatewayClientImageMIMEType(_ pathExtension: String) -> String {
-  switch pathExtension.lowercased() {
-  case "jpg", "jpeg": "image/jpeg"
-  case "gif": "image/gif"
-  case "webp": "image/webp"
-  default: "image/png"
-  }
 }
 
 /// Resolves this executable even when it was launched through a PATH lookup,

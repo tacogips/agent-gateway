@@ -15,6 +15,7 @@ public enum ACPMethod {
   public static let sessionNew = "session/new"
   public static let sessionLoad = "session/load"
   public static let sessionPrompt = "session/prompt"
+  public static let sessionSetModel = "session/set_model"
   public static let sessionCancel = "session/cancel"
   public static let sessionUpdate = "session/update"
   public static let sessionRequestPermission = "session/request_permission"
@@ -295,17 +296,69 @@ public struct ACPNewSessionRequest: Codable, Equatable, Sendable {
   }
 }
 
+/// A model an agent can run a session with (the schema's `ModelInfo`).
+public struct ACPModelInfo: Codable, Equatable, Sendable {
+  public var modelId: String
+  public var name: String
+  public var description: String?
+
+  public init(modelId: String, name: String, description: String? = nil) {
+    self.modelId = modelId
+    self.name = name
+    self.description = description
+  }
+}
+
+/// Session model state advertised in `session/new` (`SessionModelState`).
+/// Its presence signals that the agent accepts `session/set_model`.
+public struct ACPSessionModelState: Codable, Equatable, Sendable {
+  public var availableModels: [ACPModelInfo]
+  public var currentModelId: String
+
+  public init(availableModels: [ACPModelInfo], currentModelId: String) {
+    self.availableModels = availableModels
+    self.currentModelId = currentModelId
+  }
+}
+
 public struct ACPNewSessionResponse: Codable, Equatable, Sendable {
   public var sessionId: ACPSessionID
+  public var models: ACPSessionModelState?
   public var meta: ACPJSONValue?
 
-  public init(sessionId: ACPSessionID, meta: ACPJSONValue? = nil) {
+  public init(
+    sessionId: ACPSessionID,
+    models: ACPSessionModelState? = nil,
+    meta: ACPJSONValue? = nil
+  ) {
     self.sessionId = sessionId
+    self.models = models
     self.meta = meta
   }
 
   private enum CodingKeys: String, CodingKey {
     case sessionId
+    case models
+    case meta = "_meta"
+  }
+}
+
+// MARK: - session/set_model
+
+public struct ACPSetSessionModelRequest: Codable, Equatable, Sendable {
+  public var sessionId: ACPSessionID
+  public var modelId: String
+  public var meta: ACPJSONValue?
+
+  public init(sessionId: ACPSessionID, modelId: String, meta: ACPJSONValue? = nil) {
+    self.sessionId = sessionId
+    self.modelId = modelId
+    self.meta = meta
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case sessionId
+    case modelId
     case meta = "_meta"
   }
 }

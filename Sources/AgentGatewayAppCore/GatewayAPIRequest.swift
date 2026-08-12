@@ -16,7 +16,17 @@ func makeAPIRequest(
   var request = URLRequest(url: url)
   request.httpMethod = "POST"
   request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-  switch params.vendor {
+  try applyGatewayAPIKeyHeaders(&request, vendor: params.vendor, apiKey: apiKey)
+  request.httpBody = try JSONSerialization.data(withJSONObject: try apiBody(params))
+  return request
+}
+
+/// Sets vendor-specific credential headers. Gemini authenticates through a
+/// URL query parameter instead, so it sets no header here.
+func applyGatewayAPIKeyHeaders(
+  _ request: inout URLRequest, vendor: GatewayVendor, apiKey: String
+) throws {
+  switch vendor {
   case .anthropic:
     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -29,8 +39,6 @@ func makeAPIRequest(
   case .claudeCode, .codex, .cursor:
     throw GatewayRPCError(code: -32602, message: "CLI vendor cannot create an API request")
   }
-  request.httpBody = try JSONSerialization.data(withJSONObject: try apiBody(params))
-  return request
 }
 
 func defaultAPIKeyEnvironment(for vendor: GatewayVendor) -> String {
@@ -44,20 +52,33 @@ func defaultAPIKeyEnvironment(for vendor: GatewayVendor) -> String {
   }
 }
 
+/// Default API base URL per vendor (overridable through `baseURL` params).
+func defaultGatewayBaseURL(for vendor: GatewayVendor) throws -> String {
+  switch vendor {
+  case .openAI: "https://api.openai.com/v1"
+  case .anthropic: "https://api.anthropic.com/v1"
+  case .gemini: "https://generativelanguage.googleapis.com/v1beta"
+  case .openRouter: "https://openrouter.ai/api/v1"
+  case .cursorAPI: "https://api.cursor.com/v1"
+  case .claudeCode, .codex, .cursor:
+    throw GatewayRPCError(code: -32602, message: "CLI vendor has no API base URL")
+  }
+}
+
 private func apiURL(_ params: GatewayExecuteParams, apiKey: String) throws -> URL {
+  let base = try params.baseURL ?? defaultGatewayBaseURL(for: params.vendor)
   let value: String
   switch params.vendor {
   case .openAI:
-    value = appendPath(params.baseURL ?? "https://api.openai.com/v1", "responses")
+    value = appendPath(base, "responses")
   case .anthropic:
-    value = appendPath(params.baseURL ?? "https://api.anthropic.com/v1", "messages")
+    value = appendPath(base, "messages")
   case .gemini:
-    let base = params.baseURL ?? "https://generativelanguage.googleapis.com/v1beta"
     value = appendPath(base, "models/\(params.model):streamGenerateContent") + "?alt=sse&key=\(apiKey)"
   case .openRouter:
-    value = appendPath(params.baseURL ?? "https://openrouter.ai/api/v1", "chat/completions")
+    value = appendPath(base, "chat/completions")
   case .cursorAPI:
-    value = appendPath(params.baseURL ?? "https://api.cursor.com/v1", "agents")
+    value = appendPath(base, "agents")
   case .claudeCode, .codex, .cursor:
     throw GatewayRPCError(code: -32602, message: "CLI vendor cannot create an API URL")
   }
@@ -67,7 +88,7 @@ private func apiURL(_ params: GatewayExecuteParams, apiKey: String) throws -> UR
   return url
 }
 
-private func appendPath(_ base: String, _ path: String) -> String {
+func appendPath(_ base: String, _ path: String) -> String {
   base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" + path
 }
 
@@ -140,10 +161,29 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
   }
 }
 
-private struct ResolvedGatewayImage {
+struct ResolvedGatewayImage {
   var mimeType: String
   var dataBase64: String
   var dataURL: String { "data:\(mimeType);base64,\(dataBase64)" }
+}
+
+let gatewayImageMaxBytes = 20 * 1_024 * 1_024
+
+/// Loads and validates an image file for vendor requests and ACP prompts.
+func loadGatewayImageFile(_ filePath: String, mimeType: String? = nil) throws -> ResolvedGatewayImage {
+  let url = URL(fileURLWithPath: filePath)
+  let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+  guard attributes[.type] as? FileAttributeType == .typeRegular else {
+    throw GatewayRPCError(code: -32602, message: "image input must be a regular file: \(filePath)")
+  }
+  let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+  guard data.count <= gatewayImageMaxBytes else {
+    throw GatewayRPCError(code: -32602, message: "image input exceeds 20 MiB: \(filePath)")
+  }
+  return ResolvedGatewayImage(
+    mimeType: mimeType ?? gatewayImageMIMEType(url.pathExtension),
+    dataBase64: data.base64EncodedString()
+  )
 }
 
 private func gatewayImages(_ inputs: [GatewayImageInput]) throws -> [ResolvedGatewayImage] {
@@ -157,23 +197,11 @@ private func gatewayImages(_ inputs: [GatewayImageInput]) throws -> [ResolvedGat
     guard let filePath = input.filePath else {
       throw GatewayRPCError(code: -32602, message: "image input requires filePath or dataBase64")
     }
-    let url = URL(fileURLWithPath: filePath)
-    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-    guard attributes[.type] as? FileAttributeType == .typeRegular else {
-      throw GatewayRPCError(code: -32602, message: "image input must be a regular file")
-    }
-    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-    guard data.count <= 20 * 1_024 * 1_024 else {
-      throw GatewayRPCError(code: -32602, message: "image input exceeds 20 MiB")
-    }
-    return ResolvedGatewayImage(
-      mimeType: input.mimeType ?? gatewayImageMIMEType(url.pathExtension),
-      dataBase64: data.base64EncodedString()
-    )
+    return try loadGatewayImageFile(filePath, mimeType: input.mimeType)
   }
 }
 
-private func gatewayImageMIMEType(_ pathExtension: String) -> String {
+func gatewayImageMIMEType(_ pathExtension: String) -> String {
   switch pathExtension.lowercased() {
   case "jpg", "jpeg": "image/jpeg"
   case "gif": "image/gif"

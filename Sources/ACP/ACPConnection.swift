@@ -141,8 +141,12 @@ public actor ACPConnection {
     }
     do {
       let result = try await requestHandler(method, params, self)
-      if let line = try? ACPWireCoding.encodeResponse(id: id, result: ACPRawJSON(result)) {
-        write(line)
+      do {
+        write(try ACPWireCoding.encodeResponse(id: id, result: ACPRawJSON(result)))
+      } catch {
+        // Never leave the peer's request pending: a result that fails to
+        // encode still gets an error response.
+        respond(id: id, error: ACPError.internalError("failed to encode response"))
       }
     } catch let error as ACPError {
       respond(id: id, error: error)

@@ -111,10 +111,40 @@ public final class ACPInMemoryTransport: ACPTransport, @unchecked Sendable {
   }
 }
 
+/// Accumulates raw bytes and splits them into newline-delimited lines,
+/// dropping empty lines. Not thread-safe on its own; callers provide their
+/// own synchronization.
+public struct ACPLineBuffer: Sendable {
+  private var pending = Data()
+
+  public init() {}
+
+  /// Appends `data` and returns the complete lines it terminated.
+  public mutating func append(_ data: Data) -> [Data] {
+    pending.append(data)
+    var lines: [Data] = []
+    while let newline = pending.firstIndex(of: 10) {
+      let line = pending[..<newline]
+      pending.removeSubrange(...newline)
+      if !line.isEmpty {
+        lines.append(Data(line))
+      }
+    }
+    return lines
+  }
+
+  /// Returns the trailing bytes of an unterminated final line, if any.
+  public mutating func flush() -> Data? {
+    guard !pending.isEmpty else { return nil }
+    defer { pending.removeAll() }
+    return pending
+  }
+}
+
 final class ACPLineSplitter: @unchecked Sendable {
   private let lock = NSLock()
   private let continuation: AsyncStream<Data>.Continuation
-  private var pending = Data()
+  private var buffer = ACPLineBuffer()
 
   init(continuation: AsyncStream<Data>.Continuation) {
     self.continuation = continuation
@@ -122,22 +152,16 @@ final class ACPLineSplitter: @unchecked Sendable {
 
   func consume(_ data: Data) {
     lock.withLock {
-      pending.append(data)
-      while let newline = pending.firstIndex(of: 10) {
-        let line = pending[..<newline]
-        pending.removeSubrange(...newline)
-        if !line.isEmpty {
-          continuation.yield(Data(line))
-        }
+      for line in buffer.append(data) {
+        continuation.yield(line)
       }
     }
   }
 
   func finish() {
     lock.withLock {
-      if !pending.isEmpty {
-        continuation.yield(pending)
-        pending.removeAll()
+      if let rest = buffer.flush() {
+        continuation.yield(rest)
       }
       continuation.finish()
     }

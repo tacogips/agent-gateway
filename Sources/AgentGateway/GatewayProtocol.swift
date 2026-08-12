@@ -230,6 +230,55 @@ public struct GatewayReadinessParams: Codable, Equatable, Sendable {
   }
 }
 
+// MARK: - Model catalog
+
+public struct GatewayModelCatalogParams: Codable, Equatable, Sendable {
+  public var protocolVersion: String
+  public var vendor: GatewayVendor
+  public var apiKeyEnvironment: String?
+  public var baseURL: String?
+
+  public init(
+    protocolVersion: String = GatewayProtocolVersion.current,
+    vendor: GatewayVendor,
+    apiKeyEnvironment: String? = nil,
+    baseURL: String? = nil
+  ) {
+    self.protocolVersion = protocolVersion
+    self.vendor = vendor
+    self.apiKeyEnvironment = apiKeyEnvironment
+    self.baseURL = baseURL
+  }
+}
+
+public struct GatewayModelInfo: Codable, Equatable, Sendable {
+  public var modelId: String
+  public var name: String?
+  public var description: String?
+
+  public init(modelId: String, name: String? = nil, description: String? = nil) {
+    self.modelId = modelId
+    self.name = name
+    self.description = description
+  }
+}
+
+public struct GatewayModelCatalogResult: Codable, Equatable, Sendable {
+  public var protocolVersion: String
+  public var vendor: GatewayVendor
+  public var models: [GatewayModelInfo]
+
+  public init(
+    protocolVersion: String = GatewayProtocolVersion.current,
+    vendor: GatewayVendor,
+    models: [GatewayModelInfo]
+  ) {
+    self.protocolVersion = protocolVersion
+    self.vendor = vendor
+    self.models = models
+  }
+}
+
 public enum GatewayReadinessStatus: String, Codable, Sendable {
   case ready
   case unavailable
@@ -263,6 +312,23 @@ public struct GatewayUsage: Codable, Equatable, Sendable {
     self.inputTokens = inputTokens
     self.outputTokens = outputTokens
     self.totalTokens = totalTokens
+  }
+
+  /// Combines partial usage reports field-wise; newer fields win. Vendors
+  /// split usage across events (e.g. Anthropic reports input tokens on
+  /// `message_start` and output tokens on `message_delta`), so replacing
+  /// whole values would lose counts. Derives the total when both sides
+  /// are known but no vendor total was reported.
+  public static func merge(_ older: GatewayUsage?, _ newer: GatewayUsage?) -> GatewayUsage? {
+    guard older != nil || newer != nil else { return nil }
+    var merged = older ?? GatewayUsage()
+    merged.inputTokens = newer?.inputTokens ?? merged.inputTokens
+    merged.outputTokens = newer?.outputTokens ?? merged.outputTokens
+    merged.totalTokens = newer?.totalTokens ?? merged.totalTokens
+    if merged.totalTokens == nil, let input = merged.inputTokens, let output = merged.outputTokens {
+      merged.totalTokens = input + output
+    }
+    return merged
   }
 }
 

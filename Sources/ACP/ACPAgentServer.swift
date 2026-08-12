@@ -12,11 +12,18 @@ public protocol ACPAgent: Sendable {
   ) async throws -> ACPPromptResponse
   func cancel(_ notification: ACPCancelNotification) async
   func authenticate(methodId: String) async throws
+  /// Switches the session's model. Only reachable for agents that advertise
+  /// models in `session/new`; the default rejects the request.
+  func setModel(_ request: ACPSetSessionModelRequest) async throws
 }
 
 extension ACPAgent {
   public func authenticate(methodId: String) async throws {
     throw ACPError.invalidParams("authentication is not supported")
+  }
+
+  public func setModel(_ request: ACPSetSessionModelRequest) async throws {
+    throw ACPError.methodNotFound(ACPMethod.sessionSetModel)
   }
 }
 
@@ -77,6 +84,10 @@ public struct ACPAgentServer: Sendable {
       case ACPMethod.sessionPrompt:
         let request = try ACPConnection.decodeParams(ACPPromptRequest.self, from: params)
         return try ACPConnection.encodeResult(try await agent.prompt(request, connection: side))
+      case ACPMethod.sessionSetModel:
+        let request = try ACPConnection.decodeParams(ACPSetSessionModelRequest.self, from: params)
+        try await agent.setModel(request)
+        return Data("{}".utf8)
       case ACPMethod.authenticate:
         struct AuthenticateParams: Decodable {
           var methodId: String
