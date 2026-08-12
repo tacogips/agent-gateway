@@ -1,8 +1,11 @@
 # agent-gateway
 
-A Swift package and JSONL stdio server that owns vendor execution and provider
-routing. Riela sends versioned `agent/execute` requests to
-`agent-gateway server` instead of launching agent CLIs or AI APIs directly.
+A Swift package and [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP) stdio agent that owns vendor execution and provider routing. Host
+applications drive `agent-gateway server` with standard ACP JSON-RPC messages
+(`initialize`, `session/new`, `session/prompt`) instead of launching agent
+CLIs or AI APIs directly. The package also ships a reusable, generic `ACP`
+library (client, agent server, stdio/in-memory transports) usable on its own.
 
 ## Supported vendors
 
@@ -24,7 +27,7 @@ Add `.product(name: "AgentGateway", package: "agent-gateway")` to the target
 that owns workflow provider configuration. Published consumers can replace the
 path dependency with the repository URL and a released version.
 
-## JSONL server and client
+## ACP server and client
 
 Run a single request through the convenience client:
 
@@ -41,11 +44,14 @@ settings have typed client flags such as `--cursor-repository-url`,
 `--cursor-starting-ref`, `--cursor-work-on-current-branch`, and
 `--cursor-auto-create-pr`.
 
-stdout contains only JSONL `agent/event` notifications followed by one
-terminal response. For a persistent client, start `agent-gateway server` and
-write one JSON request per line to stdin. Vendor selection is explicit and is
-not inferred from the model. See
-`design-docs/specs/jsonl-stdio-protocol.md` for the protocol contract.
+stdout contains only ACP JSONL messages: `session/update` notifications
+(token streams as `agent_message_chunk`) followed by each request's response.
+For a persistent agent, start `agent-gateway server` and speak ACP over
+stdio; vendor and model come from server flags or from
+`_meta.agentGateway` on `session/new`. `--agent <path>` lets the client
+drive any external ACP agent. Vendor selection is explicit and is not
+inferred from the model. See `design-docs/specs/acp-stdio-protocol.md`
+for the protocol contract.
 
 ## Provider routing library
 
@@ -79,6 +85,7 @@ swift run agent-gateway --help
 
 The package uses Swift Package Manager with:
 
+- Generic ACP protocol target: `ACP`
 - Provider library target: `AgentGateway`
 - CLI library target: `AgentGatewayAppCore`
 - Executable target: `AgentGatewayCLI`

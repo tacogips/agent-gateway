@@ -13,10 +13,13 @@ Homebrew.
 
 ## Targets
 
+- `ACP`: generic Agent Client Protocol implementation (JSON-RPC framing,
+  protocol types, `ACPClientConnection`, `ACPAgentServer`, stdio and
+  in-memory transports); reusable outside the gateway
 - `AgentGateway`: validated provider configuration and backend-specific routing
 - `AgentGatewayAppCore`: command-line application logic
 - `AgentGatewayCLI`: command line entry point
-- `AgentGatewayTests` and `AgentGatewayAppCoreTests`: package tests
+- `ACPTests`, `AgentGatewayTests`, and `AgentGatewayAppCoreTests`: package tests
 
 ## Release Surfaces
 

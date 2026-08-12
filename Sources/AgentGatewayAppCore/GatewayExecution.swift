@@ -90,11 +90,28 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
 
     let collector = GatewayProcessCollector(vendor: params.vendor, emit: emit)
     let errorCollector = GatewayDataCollector()
+    // EOF is observed on the reader side (empty availableData) so all bytes
+    // flow through one handler in order; mixing readDataToEndOfFile with an
+    // active readabilityHandler could interleave chunks and corrupt lines.
+    let outputEOF = GatewayProcessExitWaiter()
+    let errorEOF = GatewayProcessExitWaiter()
     output.fileHandleForReading.readabilityHandler = { handle in
-      collector.consume(handle.availableData)
+      let data = handle.availableData
+      if data.isEmpty {
+        handle.readabilityHandler = nil
+        outputEOF.complete()
+      } else {
+        collector.consume(data)
+      }
     }
     standardError.fileHandleForReading.readabilityHandler = { handle in
-      errorCollector.consume(handle.availableData)
+      let data = handle.availableData
+      if data.isEmpty {
+        handle.readabilityHandler = nil
+        errorEOF.complete()
+      } else {
+        errorCollector.consume(data)
+      }
     }
     let exitWaiter = GatewayProcessExitWaiter()
     process.terminationHandler = { _ in exitWaiter.complete() }
@@ -110,13 +127,11 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     try? input.fileHandleForWriting.close()
     await withTaskCancellationHandler {
       await exitWaiter.wait()
+      await outputEOF.wait()
+      await errorEOF.wait()
     } onCancel: {
       terminateGatewayProcessGroup(process)
     }
-    output.fileHandleForReading.readabilityHandler = nil
-    standardError.fileHandleForReading.readabilityHandler = nil
-    collector.consume(output.fileHandleForReading.readDataToEndOfFile())
-    errorCollector.consume(standardError.fileHandleForReading.readDataToEndOfFile())
     collector.finish()
     let stderr = String(data: errorCollector.data, encoding: .utf8) ?? ""
     guard process.terminationStatus == 0 else {

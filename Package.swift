@@ -8,16 +8,22 @@ let package = Package(
     .macOS(.v14)
   ],
   products: [
+    .library(name: "ACP", targets: ["ACP"]),
     .library(name: "AgentGateway", targets: ["AgentGateway"]),
     .library(name: "AgentGatewayAppCore", targets: ["AgentGatewayAppCore"]),
     .executable(name: "agent-gateway", targets: ["AgentGatewayCLI"])
   ],
   targets: [
+    .target(name: "ACP"),
     .target(name: "AgentGateway"),
-    .target(name: "AgentGatewayAppCore", dependencies: ["AgentGateway"]),
+    .target(name: "AgentGatewayAppCore", dependencies: ["ACP", "AgentGateway"]),
     .executableTarget(
       name: "AgentGatewayCLI",
       dependencies: ["AgentGatewayAppCore"]
+    ),
+    .testTarget(
+      name: "ACPTests",
+      dependencies: ["ACP"]
     ),
     .testTarget(
       name: "AgentGatewayAppCoreTests",
@@ -25,7 +31,7 @@ let package = Package(
     ),
     .testTarget(
       name: "AgentGatewayTests",
-      dependencies: ["AgentGateway", "AgentGatewayAppCore"]
+      dependencies: ["ACP", "AgentGateway", "AgentGatewayAppCore"]
     )
   ],
   swiftLanguageModes: [.v6]

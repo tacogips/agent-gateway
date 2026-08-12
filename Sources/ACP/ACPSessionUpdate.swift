@@ -1,0 +1,209 @@
+import Foundation
+
+/// `session/update` notification params.
+public struct ACPSessionNotification: Codable, Equatable, Sendable {
+  public var sessionId: String
+  public var update: ACPSessionUpdate
+  public var meta: ACPJSONValue?
+
+  public init(sessionId: String, update: ACPSessionUpdate, meta: ACPJSONValue? = nil) {
+    self.sessionId = sessionId
+    self.update = update
+    self.meta = meta
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case sessionId
+    case update
+    case meta = "_meta"
+  }
+}
+
+public enum ACPToolKind: String, Codable, Sendable {
+  case read
+  case edit
+  case delete
+  case move
+  case search
+  case execute
+  case think
+  case fetch
+  case switchMode = "switch_mode"
+  case other
+}
+
+public enum ACPToolCallStatus: String, Codable, Sendable {
+  case pending
+  case inProgress = "in_progress"
+  case completed
+  case failed
+}
+
+public enum ACPToolCallContent: Codable, Equatable, Sendable {
+  case content(ACPContentBlock)
+
+  private enum CodingKeys: String, CodingKey {
+    case type
+    case content
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let type = try container.decode(String.self, forKey: .type)
+    guard type == "content" else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .type, in: container, debugDescription: "unsupported tool call content type '\(type)'"
+      )
+    }
+    self = .content(try container.decode(ACPContentBlock.self, forKey: .content))
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    switch self {
+    case .content(let block):
+      try container.encode("content", forKey: .type)
+      try container.encode(block, forKey: .content)
+    }
+  }
+}
+
+public struct ACPToolCall: Codable, Equatable, Sendable {
+  public var toolCallId: String
+  public var title: String
+  public var kind: ACPToolKind?
+  public var status: ACPToolCallStatus?
+  public var content: [ACPToolCallContent]?
+  public var rawInput: ACPJSONValue?
+  public var rawOutput: ACPJSONValue?
+
+  public init(
+    toolCallId: String,
+    title: String,
+    kind: ACPToolKind? = nil,
+    status: ACPToolCallStatus? = nil,
+    content: [ACPToolCallContent]? = nil,
+    rawInput: ACPJSONValue? = nil,
+    rawOutput: ACPJSONValue? = nil
+  ) {
+    self.toolCallId = toolCallId
+    self.title = title
+    self.kind = kind
+    self.status = status
+    self.content = content
+    self.rawInput = rawInput
+    self.rawOutput = rawOutput
+  }
+}
+
+public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
+  public var toolCallId: String
+  public var title: String?
+  public var kind: ACPToolKind?
+  public var status: ACPToolCallStatus?
+  public var content: [ACPToolCallContent]?
+  public var rawInput: ACPJSONValue?
+  public var rawOutput: ACPJSONValue?
+
+  public init(
+    toolCallId: String,
+    title: String? = nil,
+    kind: ACPToolKind? = nil,
+    status: ACPToolCallStatus? = nil,
+    content: [ACPToolCallContent]? = nil,
+    rawInput: ACPJSONValue? = nil,
+    rawOutput: ACPJSONValue? = nil
+  ) {
+    self.toolCallId = toolCallId
+    self.title = title
+    self.kind = kind
+    self.status = status
+    self.content = content
+    self.rawInput = rawInput
+    self.rawOutput = rawOutput
+  }
+}
+
+public struct ACPPlanEntry: Codable, Equatable, Sendable {
+  public enum Priority: String, Codable, Sendable {
+    case high, medium, low
+  }
+  public enum Status: String, Codable, Sendable {
+    case pending
+    case inProgress = "in_progress"
+    case completed
+  }
+
+  public var content: String
+  public var priority: Priority
+  public var status: Status
+
+  public init(content: String, priority: Priority = .medium, status: Status = .pending) {
+    self.content = content
+    self.priority = priority
+    self.status = status
+  }
+}
+
+/// Streaming updates emitted during a prompt turn, discriminated by `sessionUpdate`.
+public enum ACPSessionUpdate: Codable, Equatable, Sendable {
+  case userMessageChunk(ACPContentBlock)
+  case agentMessageChunk(ACPContentBlock)
+  case agentThoughtChunk(ACPContentBlock)
+  case toolCall(ACPToolCall)
+  case toolCallUpdate(ACPToolCallUpdate)
+  case plan([ACPPlanEntry])
+
+  private enum CodingKeys: String, CodingKey {
+    case sessionUpdate
+    case content
+    case entries
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let kind = try container.decode(String.self, forKey: .sessionUpdate)
+    switch kind {
+    case "user_message_chunk":
+      self = .userMessageChunk(try container.decode(ACPContentBlock.self, forKey: .content))
+    case "agent_message_chunk":
+      self = .agentMessageChunk(try container.decode(ACPContentBlock.self, forKey: .content))
+    case "agent_thought_chunk":
+      self = .agentThoughtChunk(try container.decode(ACPContentBlock.self, forKey: .content))
+    case "tool_call":
+      self = .toolCall(try ACPToolCall(from: decoder))
+    case "tool_call_update":
+      self = .toolCallUpdate(try ACPToolCallUpdate(from: decoder))
+    case "plan":
+      self = .plan(try container.decode([ACPPlanEntry].self, forKey: .entries))
+    default:
+      throw DecodingError.dataCorruptedError(
+        forKey: .sessionUpdate, in: container, debugDescription: "unknown session update '\(kind)'"
+      )
+    }
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    switch self {
+    case .userMessageChunk(let content):
+      try container.encode("user_message_chunk", forKey: .sessionUpdate)
+      try container.encode(content, forKey: .content)
+    case .agentMessageChunk(let content):
+      try container.encode("agent_message_chunk", forKey: .sessionUpdate)
+      try container.encode(content, forKey: .content)
+    case .agentThoughtChunk(let content):
+      try container.encode("agent_thought_chunk", forKey: .sessionUpdate)
+      try container.encode(content, forKey: .content)
+    case .toolCall(let value):
+      try container.encode("tool_call", forKey: .sessionUpdate)
+      try value.encode(to: encoder)
+    case .toolCallUpdate(let value):
+      try container.encode("tool_call_update", forKey: .sessionUpdate)
+      try value.encode(to: encoder)
+    case .plan(let entries):
+      try container.encode("plan", forKey: .sessionUpdate)
+      try container.encode(entries, forKey: .entries)
+    }
+  }
+}

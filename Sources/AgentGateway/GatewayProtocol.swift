@@ -2,7 +2,6 @@ import Foundation
 
 public enum GatewayProtocolVersion {
   public static let current = "1.0"
-  public static let jsonRPC = "2.0"
 }
 
 public enum GatewayVendor: String, Codable, CaseIterable, Sendable {
@@ -212,20 +211,6 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
   }
 }
 
-public struct GatewayRPCRequest: Codable, Equatable, Sendable {
-  public var jsonrpc: String
-  public var id: String
-  public var method: String
-  public var params: GatewayExecuteParams
-
-  public init(id: String, params: GatewayExecuteParams) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.method = "agent/execute"
-    self.params = params
-  }
-}
-
 public struct GatewayReadinessParams: Codable, Equatable, Sendable {
   public var protocolVersion: String
   public var vendor: GatewayVendor
@@ -242,20 +227,6 @@ public struct GatewayReadinessParams: Codable, Equatable, Sendable {
     self.vendor = vendor
     self.executable = executable
     self.apiKeyEnvironment = apiKeyEnvironment
-  }
-}
-
-public struct GatewayReadinessRPCRequest: Codable, Equatable, Sendable {
-  public var jsonrpc: String
-  public var id: String
-  public var method: String
-  public var params: GatewayReadinessParams
-
-  public init(id: String, params: GatewayReadinessParams) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.method = "agent/readiness"
-    self.params = params
   }
 }
 
@@ -280,73 +251,6 @@ public struct GatewayReadinessResult: Codable, Equatable, Sendable {
     self.vendor = vendor
     self.status = status
     self.detail = detail
-  }
-}
-
-public struct GatewayReadinessRPCResponse: Codable, Equatable, Sendable {
-  public var jsonrpc: String
-  public var id: String
-  public var result: GatewayReadinessResult?
-  public var error: GatewayRPCError?
-
-  public init(id: String, result: GatewayReadinessResult) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.result = result
-    self.error = nil
-  }
-
-  public init(id: String, error: GatewayRPCError) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.result = nil
-    self.error = error
-  }
-}
-
-public struct GatewayStreamEvent: Codable, Equatable, Sendable {
-  public var requestId: String
-  public var sequence: Int
-  public var vendor: GatewayVendor
-  public var type: String
-  public var channel: GatewayEventChannel
-  public var textDelta: String?
-  public var textSnapshot: String?
-  public var vendorPayload: String?
-  public var sessionId: String?
-
-  public init(
-    requestId: String,
-    sequence: Int,
-    vendor: GatewayVendor,
-    type: String,
-    channel: GatewayEventChannel,
-    textDelta: String? = nil,
-    textSnapshot: String? = nil,
-    vendorPayload: String? = nil,
-    sessionId: String? = nil
-  ) {
-    self.requestId = requestId
-    self.sequence = sequence
-    self.vendor = vendor
-    self.type = type
-    self.channel = channel
-    self.textDelta = textDelta
-    self.textSnapshot = textSnapshot
-    self.vendorPayload = vendorPayload
-    self.sessionId = sessionId
-  }
-}
-
-public struct GatewayRPCNotification: Codable, Equatable, Sendable {
-  public var jsonrpc: String
-  public var method: String
-  public var params: GatewayStreamEvent
-
-  public init(event: GatewayStreamEvent) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.method = "agent/event"
-    self.params = event
   }
 }
 
@@ -397,26 +301,5 @@ public struct GatewayRPCError: Codable, Equatable, Error, Sendable {
   public init(code: Int, message: String) {
     self.code = code
     self.message = message
-  }
-}
-
-public struct GatewayRPCResponse: Codable, Equatable, Sendable {
-  public var jsonrpc: String
-  public var id: String
-  public var result: GatewayExecuteResult?
-  public var error: GatewayRPCError?
-
-  public init(id: String, result: GatewayExecuteResult) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.result = result
-    self.error = nil
-  }
-
-  public init(id: String, error: GatewayRPCError) {
-    self.jsonrpc = GatewayProtocolVersion.jsonRPC
-    self.id = id
-    self.result = nil
-    self.error = error
   }
 }

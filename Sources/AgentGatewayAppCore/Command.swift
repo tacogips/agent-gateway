@@ -1,3 +1,4 @@
+import ACP
 import AgentGateway
 import Foundation
 
@@ -36,13 +37,23 @@ public struct AppCommand: Sendable {
   public func runStreaming() async throws -> Int32 {
     switch arguments.first {
     case "server":
-      return await GatewayJSONLServer().serveStandardIO()
+      let defaults = try serverDefaults(Array(arguments.dropFirst()))
+      let server = ACPAgentServer(
+        agent: GatewayACPAgent(defaults: defaults),
+        transport: ACPFileHandleTransport.standardIO()
+      )
+      await server.serve()
+      return 0
     case "client":
-      let request = try clientRequest(Array(arguments.dropFirst()))
-      return try GatewaySubprocessClient().run(request: request)
+      let options = try clientOptions(Array(arguments.dropFirst()))
+      return try await GatewayACPClientRunner().run(options: options)
     case "readiness":
-      let request = try readinessRequest(Array(arguments.dropFirst()))
-      return try GatewaySubprocessClient().run(request: request)
+      let params = try readinessParams(Array(arguments.dropFirst()))
+      let result = ProductionGatewayExecutor().readiness(params)
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+      FileHandle.standardOutput.write(try encoder.encode(result) + Data([10]))
+      return result.status == .ready ? 0 : 1
     default:
       return 0
     }
@@ -52,20 +63,26 @@ public struct AppCommand: Sendable {
     """
     Usage: agent-gateway <command> [options]
 
-      agent-gateway server
+      agent-gateway server [--vendor <vendor> --model <model>] [options]
       agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options] [-- <vendor-args>]
+      agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway --help
 
     Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
 
-    Protocol: JSON-RPC 2.0-shaped messages, one JSON object per line. The server
-    reads agent/execute requests from stdin and writes agent/event notifications
-    followed by one terminal response to stdout. Diagnostics use stderr only.
+    Protocol: Agent Client Protocol (ACP, https://agentclientprotocol.com).
+    `server` serves the ACP agent side over stdio: JSON-RPC 2.0 messages,
+    one JSON object per line (initialize, session/new, session/prompt;
+    streaming output as session/update notifications). Vendor and model can
+    be fixed with server options or supplied per session by the ACP client
+    via `_meta.agentGateway` on session/new. Diagnostics use stderr only.
+    `client` spawns an ACP agent (this binary's server mode, or --agent) and
+    echoes the agent's raw ACP JSONL messages to stdout.
     """
   }
 
-  func clientRequest(_ arguments: [String]) throws -> GatewayRPCRequest {
+  func serverDefaults(_ arguments: [String]) throws -> GatewayAgentDefaults {
     var options = GatewayClientOptions()
     var vendorArguments: [String] = []
     var index = 0
@@ -80,33 +97,50 @@ public struct AppCommand: Sendable {
       try options.assign(key: key, value: arguments[index + 1])
       index += 2
     }
-    guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
+    if let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) == nil {
       throw Error.missingValue("--vendor")
     }
-    guard let model = options.model else { throw Error.missingValue("--model") }
+    return options.defaults(vendorArguments: vendorArguments)
+  }
+
+  func clientOptions(_ arguments: [String]) throws -> GatewayACPClientOptions {
+    var options = GatewayClientOptions()
+    var vendorArguments: [String] = []
+    var index = 0
+    while index < arguments.count {
+      if arguments[index] == "--" {
+        vendorArguments = Array(arguments.dropFirst(index + 1))
+        break
+      }
+      let key = arguments[index]
+      guard key.hasPrefix("--") else { throw Error.unknownArgument(key) }
+      guard index + 1 < arguments.count else { throw Error.missingValue(key) }
+      try options.assign(key: key, value: arguments[index + 1])
+      index += 2
+    }
     guard let prompt = options.prompt else { throw Error.missingValue("--prompt") }
-    return GatewayRPCRequest(
-      id: UUID().uuidString,
-      params: GatewayExecuteParams(
-        vendor: vendor,
-        model: model,
+    let cwd = options.workingDirectory ?? FileManager.default.currentDirectoryPath
+    if let agent = options.agentExecutable {
+      return GatewayACPClientOptions(
         prompt: prompt,
-        systemPrompt: options.systemPrompt,
-        workingDirectory: options.workingDirectory,
-        executable: options.executable,
-        arguments: vendorArguments,
-        providerName: options.providerName,
-        apiKeyEnvironment: options.apiKeyEnvironment,
-        baseURL: options.baseURL,
-        maxTokens: options.maxTokens,
-        sessionMode: options.sessionId == nil ? .new : .reuse,
-        sessionId: options.sessionId,
-        cursorAPI: options.cursorAPIOptions
+        cwd: cwd,
+        agentExecutable: agent,
+        agentArguments: vendorArguments
       )
+    }
+    guard let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) != nil else {
+      throw Error.missingValue("--vendor")
+    }
+    guard options.model != nil else { throw Error.missingValue("--model") }
+    return GatewayACPClientOptions(
+      prompt: prompt,
+      cwd: cwd,
+      serverOptions: options.serverArguments(vendorArguments: vendorArguments),
+      sessionMeta: options.sessionMeta()
     )
   }
 
-  func readinessRequest(_ arguments: [String]) throws -> GatewayReadinessRPCRequest {
+  func readinessParams(_ arguments: [String]) throws -> GatewayReadinessParams {
     var options = GatewayClientOptions()
     var index = 0
     while index < arguments.count {
@@ -119,13 +153,10 @@ public struct AppCommand: Sendable {
     guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
       throw Error.missingValue("--vendor")
     }
-    return GatewayReadinessRPCRequest(
-      id: UUID().uuidString,
-      params: GatewayReadinessParams(
-        vendor: vendor,
-        executable: options.executable,
-        apiKeyEnvironment: options.apiKeyEnvironment
-      )
+    return GatewayReadinessParams(
+      vendor: vendor,
+      executable: options.executable,
+      apiKeyEnvironment: options.apiKeyEnvironment
     )
   }
 }
@@ -137,6 +168,7 @@ struct GatewayClientOptions: Equatable, Sendable {
   var systemPrompt: String?
   var workingDirectory: String?
   var executable: String?
+  var agentExecutable: String?
   var providerName: String?
   var apiKeyEnvironment: String?
   var baseURL: String?
@@ -158,14 +190,61 @@ struct GatewayClientOptions: Equatable, Sendable {
     )
   }
 
+  func defaults(vendorArguments: [String]) -> GatewayAgentDefaults {
+    GatewayAgentDefaults(
+      vendor: vendor.flatMap(GatewayVendor.init(rawValue:)),
+      model: model,
+      systemPrompt: systemPrompt,
+      executable: executable,
+      arguments: vendorArguments,
+      providerName: providerName,
+      apiKeyEnvironment: apiKeyEnvironment,
+      baseURL: baseURL,
+      maxTokens: maxTokens,
+      cursorAPI: cursorAPIOptions
+    )
+  }
+
+  /// Recreates the `server` mode flags equivalent to these client options so
+  /// the spawned agent starts with the same defaults.
+  func serverArguments(vendorArguments: [String]) -> [String] {
+    var arguments: [String] = []
+    func flag(_ name: String, _ value: String?) {
+      if let value { arguments += [name, value] }
+    }
+    flag("--vendor", vendor)
+    flag("--model", model)
+    flag("--system", systemPrompt)
+    flag("--executable", executable)
+    flag("--provider-name", providerName)
+    flag("--api-key-environment", apiKeyEnvironment)
+    flag("--base-url", baseURL)
+    flag("--max-tokens", maxTokens.map(String.init))
+    flag("--cursor-repository-url", cursorRepositoryURL)
+    flag("--cursor-starting-ref", cursorStartingRef)
+    flag("--cursor-work-on-current-branch", cursorWorkOnCurrentBranch.map(String.init))
+    flag("--cursor-auto-create-pr", cursorAutoCreatePR.map(String.init))
+    if !vendorArguments.isEmpty {
+      arguments += ["--"] + vendorArguments
+    }
+    return arguments
+  }
+
+  /// `meta` for session/new, carrying an existing vendor session to resume.
+  func sessionMeta() -> ACPJSONValue? {
+    guard let sessionId else { return nil }
+    return .object(["agentGateway": .object(["vendorSessionId": .string(sessionId)])])
+  }
+
   mutating func assign(key: String, value: String) throws {
     switch key {
     case "--vendor": vendor = value
     case "--model": model = value
     case "--prompt": prompt = value
     case "--system": systemPrompt = value
-    case "--working-directory": workingDirectory = value
+    case "--working-directory", "--cwd": workingDirectory = value
     case "--executable": executable = value
+    case "--agent": agentExecutable = value
     case "--provider-name": providerName = value
     case "--api-key-environment": apiKeyEnvironment = value
     case "--base-url": baseURL = value
