@@ -4,10 +4,10 @@
     "path": "swift-v1",
     "ref": "main"
   },
-  "hash": "62031f3cf164b8a1b958e1ddbb328486cba656578fa83dc5a9ba3d09056e83bb",
+  "hash": "6dc5791ed902cf3724ca85dfbd1dc9ba75813821c7ace4d43dd6491064b05cc1",
   "metadata": {
-    "generated_at": "2026-08-12T11:06:50.738594+09:00",
-    "generated_by": "ign checkout",
+    "generated_at": "2026-08-12T11:46:46.891881+09:00",
+    "generated_by": "ign update",
     "template_name": "swift-v1",
     "template_version": "1.0.0",
     "ign_version": "0.1.25"

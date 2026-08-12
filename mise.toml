@@ -17,7 +17,7 @@ fi
 '''
 
 [tools]
-swift = "6.0"
+swift = "6.3.3"
 swiftlint = "latest"
 gitleaks = "latest"
 
