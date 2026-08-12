@@ -120,13 +120,17 @@ public struct AppCommand: Sendable {
       try options.assign(key: key, value: arguments[index + 1])
       index += 2
     }
-    guard let prompt = options.prompt else { throw Error.missingValue("--prompt") }
+    let promptBlocksFromStdin = options.promptBlocksSource == "-"
+    guard let prompt = options.prompt ?? (promptBlocksFromStdin ? "" : nil) else {
+      throw Error.missingValue("--prompt")
+    }
     let cwd = options.workingDirectory ?? FileManager.default.currentDirectoryPath
     if let agent = options.agentExecutable {
       return GatewayACPClientOptions(
         prompt: prompt,
         cwd: cwd,
         images: options.images,
+        promptBlocksFromStdin: promptBlocksFromStdin,
         agentExecutable: agent,
         agentArguments: vendorArguments
       )
@@ -139,6 +143,7 @@ public struct AppCommand: Sendable {
       prompt: prompt,
       cwd: cwd,
       images: options.images,
+      promptBlocksFromStdin: promptBlocksFromStdin,
       serverOptions: options.serverArguments(vendorArguments: vendorArguments),
       sessionMeta: options.sessionMeta()
     )
@@ -179,6 +184,7 @@ struct GatewayClientOptions: Equatable, Sendable {
   var maxTokens: Int?
   var sessionId: String?
   var images: [GatewayClientImageInput] = []
+  var promptBlocksSource: String?
   var cursorRepositoryURL: String?
   var cursorStartingRef: String?
   var cursorWorkOnCurrentBranch: Bool?
@@ -255,6 +261,7 @@ struct GatewayClientOptions: Equatable, Sendable {
     case "--base-url": baseURL = value
     case "--max-tokens": maxTokens = Int(value)
     case "--session-id": sessionId = value
+    case "--prompt-blocks": promptBlocksSource = value
     case "--image": images.append(.filePath(value))
     case "--image-data":
       guard let separator = value.firstIndex(of: ":") else {

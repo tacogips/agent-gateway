@@ -17,6 +17,9 @@ public struct GatewayACPClientOptions: Sendable {
   public var prompt: String
   public var cwd: String
   public var images: [GatewayClientImageInput]
+  /// When true, stdin carries a JSON array of ACP content blocks that
+  /// becomes the whole prompt; `prompt` and `images` are ignored.
+  public var promptBlocksFromStdin: Bool
   public var agentExecutable: String?
   public var agentArguments: [String]
   public var serverOptions: [String]
@@ -26,6 +29,7 @@ public struct GatewayACPClientOptions: Sendable {
     prompt: String,
     cwd: String,
     images: [GatewayClientImageInput] = [],
+    promptBlocksFromStdin: Bool = false,
     agentExecutable: String? = nil,
     agentArguments: [String] = [],
     serverOptions: [String] = [],
@@ -34,6 +38,7 @@ public struct GatewayACPClientOptions: Sendable {
     self.prompt = prompt
     self.cwd = cwd
     self.images = images
+    self.promptBlocksFromStdin = promptBlocksFromStdin
     self.agentExecutable = agentExecutable
     self.agentArguments = agentArguments
     self.serverOptions = serverOptions
@@ -113,6 +118,18 @@ public struct GatewayACPClientRunner: Sendable {
 }
 
 private func promptBlocks(_ options: GatewayACPClientOptions) throws -> [ACPContentBlock] {
+  if options.promptBlocksFromStdin {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    do {
+      let blocks = try JSONDecoder().decode([ACPContentBlock].self, from: data)
+      guard !blocks.isEmpty else { throw AppCommand.Error.missingValue("--prompt-blocks") }
+      return blocks
+    } catch let error as AppCommand.Error {
+      throw error
+    } catch {
+      throw AppCommand.Error.missingValue("--prompt-blocks stdin must be a JSON array of ACP content blocks")
+    }
+  }
   let text: String
   if options.prompt == "-" {
     let data = FileHandle.standardInput.readDataToEndOfFile()
