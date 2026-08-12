@@ -83,4 +83,13 @@ agent-gateway client \
   --api-key-environment OPENROUTER_API_KEY
 ```
 
-Exit code is `0` when the turn ends with `end_turn`.
+Exit code is `0` when the turn ends with `end_turn`. `--prompt -` reads the
+prompt text from stdin (recommended for large prompts); repeatable
+`--image <path>` and `--image-data <mimeType>:<base64>` become ACP image
+content blocks in the prompt.
+
+The `session/prompt` response `_meta.agentGateway` also carries `resultText`,
+the vendor's authoritative final text. Streamed chunks may span multiple
+assistant messages, so hosts that need exactly the vendor's final result
+(e.g. output-contract parsing) should prefer `resultText` over concatenating
+chunks.

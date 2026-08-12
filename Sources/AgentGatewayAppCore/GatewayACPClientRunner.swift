@@ -2,12 +2,21 @@ import ACP
 import AgentGateway
 import Foundation
 
+/// Image inputs for `agent-gateway client`, resolved into ACP image content
+/// blocks before the prompt turn.
+public enum GatewayClientImageInput: Equatable, Sendable {
+  case filePath(String)
+  case data(mimeType: String, base64: String)
+}
+
 /// Options for `agent-gateway client`: spawns an ACP agent (this executable's
 /// `server` mode by default, or any external ACP agent) and runs one prompt
 /// turn, echoing the raw ACP JSONL traffic received from the agent to stdout.
 public struct GatewayACPClientOptions: Sendable {
+  /// `-` reads the prompt text from stdin.
   public var prompt: String
   public var cwd: String
+  public var images: [GatewayClientImageInput]
   public var agentExecutable: String?
   public var agentArguments: [String]
   public var serverOptions: [String]
@@ -16,6 +25,7 @@ public struct GatewayACPClientOptions: Sendable {
   public init(
     prompt: String,
     cwd: String,
+    images: [GatewayClientImageInput] = [],
     agentExecutable: String? = nil,
     agentArguments: [String] = [],
     serverOptions: [String] = [],
@@ -23,6 +33,7 @@ public struct GatewayACPClientOptions: Sendable {
   ) {
     self.prompt = prompt
     self.cwd = cwd
+    self.images = images
     self.agentExecutable = agentExecutable
     self.agentArguments = agentArguments
     self.serverOptions = serverOptions
@@ -73,6 +84,7 @@ public struct GatewayACPClientRunner: Sendable {
     await client.start()
 
     do {
+      let prompt = try promptBlocks(options)
       _ = try await client.initialize(
         ACPInitializeRequest(
           clientInfo: ACPImplementation(name: "agent-gateway-client", version: Version.current)
@@ -82,7 +94,7 @@ public struct GatewayACPClientRunner: Sendable {
         ACPNewSessionRequest(cwd: options.cwd, mcpServers: [], meta: options.sessionMeta)
       )
       let response = try await client.prompt(
-        ACPPromptRequest(sessionId: session.sessionId, prompt: [.text(options.prompt)])
+        ACPPromptRequest(sessionId: session.sessionId, prompt: prompt)
       )
       await client.stop()
       process.waitUntilExit()
@@ -97,6 +109,47 @@ public struct GatewayACPClientRunner: Sendable {
       }
       throw error
     }
+  }
+}
+
+private func promptBlocks(_ options: GatewayACPClientOptions) throws -> [ACPContentBlock] {
+  let text: String
+  if options.prompt == "-" {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let decoded = String(bytes: data, encoding: .utf8) else {
+      throw AppCommand.Error.missingValue("--prompt")
+    }
+    text = decoded
+  } else {
+    text = options.prompt
+  }
+  var blocks: [ACPContentBlock] = [.text(text)]
+  for image in options.images {
+    switch image {
+    case .data(let mimeType, let base64):
+      blocks.append(.image(ACPImageContent(data: base64, mimeType: mimeType)))
+    case .filePath(let path):
+      let url = URL(fileURLWithPath: path)
+      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+      guard data.count <= 20 * 1_024 * 1_024 else {
+        throw AppCommand.Error.missingValue("--image exceeds 20 MiB: \(path)")
+      }
+      blocks.append(.image(ACPImageContent(
+        data: data.base64EncodedString(),
+        mimeType: gatewayClientImageMIMEType(url.pathExtension),
+        uri: url.absoluteString
+      )))
+    }
+  }
+  return blocks
+}
+
+private func gatewayClientImageMIMEType(_ pathExtension: String) -> String {
+  switch pathExtension.lowercased() {
+  case "jpg", "jpeg": "image/jpeg"
+  case "gif": "image/gif"
+  case "webp": "image/webp"
+  default: "image/png"
   }
 }
 

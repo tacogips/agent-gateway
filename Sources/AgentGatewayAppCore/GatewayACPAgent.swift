@@ -233,7 +233,11 @@ public actor GatewayACPAgent: ACPAgent {
   private func resultMeta(_ result: GatewayExecuteResult) -> ACPJSONValue {
     var gateway: [String: ACPJSONValue] = [
       "vendor": .string(result.vendor.rawValue),
-      "model": .string(result.model)
+      "model": .string(result.model),
+      // The vendor's authoritative final text. Streamed chunks may span
+      // multiple assistant messages; hosts that need exactly the vendor's
+      // final result (e.g. for output contracts) should prefer this value.
+      "resultText": .string(result.text)
     ]
     if let sessionId = result.sessionId {
       gateway["vendorSessionId"] = .string(sessionId)

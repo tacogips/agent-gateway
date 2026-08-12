@@ -78,7 +78,9 @@ public struct AppCommand: Sendable {
     be fixed with server options or supplied per session by the ACP client
     via `_meta.agentGateway` on session/new. Diagnostics use stderr only.
     `client` spawns an ACP agent (this binary's server mode, or --agent) and
-    echoes the agent's raw ACP JSONL messages to stdout.
+    echoes the agent's raw ACP JSONL messages to stdout. `--prompt -` reads
+    the prompt text from stdin; repeatable `--image <path>` and
+    `--image-data <mimeType>:<base64>` attach ACP image content blocks.
     """
   }
 
@@ -124,6 +126,7 @@ public struct AppCommand: Sendable {
       return GatewayACPClientOptions(
         prompt: prompt,
         cwd: cwd,
+        images: options.images,
         agentExecutable: agent,
         agentArguments: vendorArguments
       )
@@ -135,6 +138,7 @@ public struct AppCommand: Sendable {
     return GatewayACPClientOptions(
       prompt: prompt,
       cwd: cwd,
+      images: options.images,
       serverOptions: options.serverArguments(vendorArguments: vendorArguments),
       sessionMeta: options.sessionMeta()
     )
@@ -174,6 +178,7 @@ struct GatewayClientOptions: Equatable, Sendable {
   var baseURL: String?
   var maxTokens: Int?
   var sessionId: String?
+  var images: [GatewayClientImageInput] = []
   var cursorRepositoryURL: String?
   var cursorStartingRef: String?
   var cursorWorkOnCurrentBranch: Bool?
@@ -250,6 +255,15 @@ struct GatewayClientOptions: Equatable, Sendable {
     case "--base-url": baseURL = value
     case "--max-tokens": maxTokens = Int(value)
     case "--session-id": sessionId = value
+    case "--image": images.append(.filePath(value))
+    case "--image-data":
+      guard let separator = value.firstIndex(of: ":") else {
+        throw AppCommand.Error.missingValue("--image-data expects <mimeType>:<base64>")
+      }
+      images.append(.data(
+        mimeType: String(value[..<separator]),
+        base64: String(value[value.index(after: separator)...])
+      ))
     case "--cursor-repository-url": cursorRepositoryURL = value
     case "--cursor-starting-ref": cursorStartingRef = value
     case "--cursor-work-on-current-branch": cursorWorkOnCurrentBranch = Bool(value)
