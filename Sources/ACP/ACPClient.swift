@@ -67,7 +67,7 @@ public struct ACPClientConnection: Sendable {
     try await connection.sendRequest(method: ACPMethod.sessionPrompt, params: request)
   }
 
-  public func cancel(sessionId: String) async throws {
+  public func cancel(sessionId: ACPSessionID) async throws {
     try await connection.sendNotification(
       method: ACPMethod.sessionCancel,
       params: ACPCancelNotification(sessionId: sessionId)

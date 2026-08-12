@@ -1,5 +1,12 @@
 import Foundation
 
+/// Session identifier issued by the agent in `session/new`
+/// (the schema's `SessionId`).
+public typealias ACPSessionID = String
+
+/// Tool call identifier issued by the agent (the schema's `ToolCallId`).
+public typealias ACPToolCallID = String
+
 // MARK: - Method names
 
 public enum ACPMethod {
@@ -289,10 +296,10 @@ public struct ACPNewSessionRequest: Codable, Equatable, Sendable {
 }
 
 public struct ACPNewSessionResponse: Codable, Equatable, Sendable {
-  public var sessionId: String
+  public var sessionId: ACPSessionID
   public var meta: ACPJSONValue?
 
-  public init(sessionId: String, meta: ACPJSONValue? = nil) {
+  public init(sessionId: ACPSessionID, meta: ACPJSONValue? = nil) {
     self.sessionId = sessionId
     self.meta = meta
   }
@@ -306,11 +313,11 @@ public struct ACPNewSessionResponse: Codable, Equatable, Sendable {
 // MARK: - session/prompt
 
 public struct ACPPromptRequest: Codable, Equatable, Sendable {
-  public var sessionId: String
+  public var sessionId: ACPSessionID
   public var prompt: [ACPContentBlock]
   public var meta: ACPJSONValue?
 
-  public init(sessionId: String, prompt: [ACPContentBlock], meta: ACPJSONValue? = nil) {
+  public init(sessionId: ACPSessionID, prompt: [ACPContentBlock], meta: ACPJSONValue? = nil) {
     self.sessionId = sessionId
     self.prompt = prompt
     self.meta = meta
@@ -349,10 +356,10 @@ public struct ACPPromptResponse: Codable, Equatable, Sendable {
 // MARK: - session/cancel
 
 public struct ACPCancelNotification: Codable, Equatable, Sendable {
-  public var sessionId: String
+  public var sessionId: ACPSessionID
   public var meta: ACPJSONValue?
 
-  public init(sessionId: String, meta: ACPJSONValue? = nil) {
+  public init(sessionId: ACPSessionID, meta: ACPJSONValue? = nil) {
     self.sessionId = sessionId
     self.meta = meta
   }

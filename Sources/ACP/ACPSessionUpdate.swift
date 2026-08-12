@@ -2,11 +2,11 @@ import Foundation
 
 /// `session/update` notification params.
 public struct ACPSessionNotification: Codable, Equatable, Sendable {
-  public var sessionId: String
+  public var sessionId: ACPSessionID
   public var update: ACPSessionUpdate
   public var meta: ACPJSONValue?
 
-  public init(sessionId: String, update: ACPSessionUpdate, meta: ACPJSONValue? = nil) {
+  public init(sessionId: ACPSessionID, update: ACPSessionUpdate, meta: ACPJSONValue? = nil) {
     self.sessionId = sessionId
     self.update = update
     self.meta = meta
@@ -69,7 +69,7 @@ public enum ACPToolCallContent: Codable, Equatable, Sendable {
 }
 
 public struct ACPToolCall: Codable, Equatable, Sendable {
-  public var toolCallId: String
+  public var toolCallId: ACPToolCallID
   public var title: String
   public var kind: ACPToolKind?
   public var status: ACPToolCallStatus?
@@ -78,7 +78,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
   public var rawOutput: ACPJSONValue?
 
   public init(
-    toolCallId: String,
+    toolCallId: ACPToolCallID,
     title: String,
     kind: ACPToolKind? = nil,
     status: ACPToolCallStatus? = nil,
@@ -97,7 +97,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
 }
 
 public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
-  public var toolCallId: String
+  public var toolCallId: ACPToolCallID
   public var title: String?
   public var kind: ACPToolKind?
   public var status: ACPToolCallStatus?
@@ -106,7 +106,7 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
   public var rawOutput: ACPJSONValue?
 
   public init(
-    toolCallId: String,
+    toolCallId: ACPToolCallID,
     title: String? = nil,
     kind: ACPToolKind? = nil,
     status: ACPToolCallStatus? = nil,
