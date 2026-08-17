@@ -9,7 +9,6 @@ release/
 *.xcodeproj/
 *.xcworkspace/
 
-.pre-commit-config.yaml
 **/.env
 **/*.private*
 
