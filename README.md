@@ -114,6 +114,45 @@ switches the model for subsequent prompts. CLI vendors (claude-code, codex,
 cursor) have no machine-readable model enumeration and return an explicit
 unsupported error instead of a guessed list.
 
+### Model pricing
+
+The `models` command attaches best-effort per-token pricing to each model
+(`pricing.currency` — ISO 4217, `inputCostPerToken`, `outputCostPerToken`,
+`cacheReadInputTokenCost`, `cacheCreationInputTokenCost`), sourced from the
+[LiteLLM pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+the same way ccusage resolves prices. Vendor APIs do not expose pricing, so
+this is metadata layered onto the vendor's live model list; models without a
+pricing entry are still listed, and a pricing failure never fails the
+command. Pricing is only looked up by this query — prompt execution never
+loads it.
+
+ACP (Agent Client Protocol) defines no per-model pricing interface — its
+only price type is the session-cumulative `Cost {amount, currency}` inside
+`usage_update` — so this pricing payload is a gateway extension that borrows
+ACP's ISO 4217 currency convention.
+
+```bash
+agent-gateway models --vendor anthropic --pricing offline
+```
+
+`--pricing` selects the resolution mode:
+
+- `auto` (default): reuse the LiteLLM on-disk cache when it is younger than
+  24 hours, otherwise fetch the LiteLLM database and refresh the cache; if
+  the fetch fails, fall back to the stale cache, then resolve the fallback
+  pricing table published in this repository
+  (`data/model-prices.json`, fetched from the GitHub raw URL) the same way
+  (cache, remote, stale cache). Each source caches on disk so repeat runs
+  within the cache lifetime make no pricing requests at all.
+- `offline`: never touch the network (LiteLLM cache, then fallback-table
+  cache).
+- `off`: skip pricing entirely.
+
+The result's `pricingSource` field reports which layer answered
+(`litellm-remote`, `litellm-cache`, `fallback-table-remote`, or
+`fallback-table-cache`). Regenerate the fallback table with
+`mise run update-model-prices`.
+
 ## Provider routing library
 
 ```swift
@@ -134,6 +173,27 @@ let claudeEnvironment = try AgentProviderRouting.claudeCodeEnvironment(
 For a custom gateway, construct `AgentProviderConfiguration` with a distinct
 Base URL for each agent backend. HTTPS is required except for loopback HTTP
 development endpoints.
+
+The CLI can select a custom Codex- or Claude Code-compatible gateway with only
+`--base-url`. In that mode the provider and model names both default to
+`custom`; use the endpoint appropriate for the selected backend:
+
+```bash
+agent-gateway client \
+  --vendor codex \
+  --base-url https://api.kimi.example/v1 \
+  --api-key-environment KIMI_API_KEY \
+  --prompt 'Reply with exactly OK'
+
+agent-gateway client \
+  --vendor claude-code \
+  --base-url https://api.kimi.example \
+  --api-key-environment KIMI_API_KEY \
+  --prompt 'Reply with exactly OK'
+```
+
+Pass `--provider-name` and `--model` explicitly for named routing services that
+need their upstream model identifier, such as OpenRouter.
 
 ## Development
 

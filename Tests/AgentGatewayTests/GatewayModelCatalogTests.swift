@@ -75,7 +75,7 @@ import Testing
 }
 
 @Test func modelsCommandBuildsTypedParams() throws {
-  let params = try AppCommand(arguments: []).modelCatalogParams([
+  let (params, pricingMode) = try AppCommand(arguments: []).modelCatalogParams([
     "--vendor", "openrouter",
     "--api-key-environment", "ROUTER_TOKEN",
     "--base-url", "https://proxy.example/v1"
@@ -83,4 +83,23 @@ import Testing
   #expect(params.vendor == .openRouter)
   #expect(params.apiKeyEnvironment == "ROUTER_TOKEN")
   #expect(params.baseURL == "https://proxy.example/v1")
+  #expect(pricingMode == .auto)
+}
+
+@Test func modelsCommandParsesPricingMode() throws {
+  let (_, offline) = try AppCommand(arguments: []).modelCatalogParams([
+    "--vendor", "anthropic", "--pricing", "offline"
+  ])
+  #expect(offline == .offline)
+
+  let (_, off) = try AppCommand(arguments: []).modelCatalogParams([
+    "--vendor", "anthropic", "--pricing", "off"
+  ])
+  #expect(off == .off)
+
+  #expect(throws: AppCommand.Error.missingValue("--pricing")) {
+    _ = try AppCommand(arguments: []).modelCatalogParams([
+      "--vendor", "anthropic", "--pricing", "sometimes"
+    ])
+  }
 }

@@ -251,15 +251,65 @@ public struct GatewayModelCatalogParams: Codable, Equatable, Sendable {
   }
 }
 
+/// Cost per token for one model, using LiteLLM's field naming
+/// (`input_cost_per_token` etc. from `model_prices_and_context_window.json`).
+/// ACP defines no per-model pricing (its only price type is the
+/// session-cumulative `Cost`), so this is a gateway extension; `currency`
+/// follows ACP `Cost.currency`'s ISO 4217 convention. All cost fields are
+/// optional: pricing is best-effort metadata and its absence must never
+/// block a gateway feature.
+public struct GatewayModelPricing: Codable, Equatable, Sendable {
+  /// ISO 4217 currency code applying to every cost field.
+  public var currency: String
+  public var inputCostPerToken: Double?
+  public var outputCostPerToken: Double?
+  public var cacheReadInputTokenCost: Double?
+  public var cacheCreationInputTokenCost: Double?
+
+  public init(
+    currency: String = "USD",
+    inputCostPerToken: Double? = nil,
+    outputCostPerToken: Double? = nil,
+    cacheReadInputTokenCost: Double? = nil,
+    cacheCreationInputTokenCost: Double? = nil
+  ) {
+    self.currency = currency
+    self.inputCostPerToken = inputCostPerToken
+    self.outputCostPerToken = outputCostPerToken
+    self.cacheReadInputTokenCost = cacheReadInputTokenCost
+    self.cacheCreationInputTokenCost = cacheCreationInputTokenCost
+  }
+}
+
+/// Where the pricing attached to a model catalog came from.
+public enum GatewayModelPricingSource: String, Codable, Sendable {
+  /// Fetched from the LiteLLM pricing database over the network.
+  case liteLLMRemote = "litellm-remote"
+  /// Served from the on-disk copy of an earlier LiteLLM fetch.
+  case liteLLMCache = "litellm-cache"
+  /// Fetched from the fallback pricing table published in the
+  /// agent-gateway GitHub repository.
+  case fallbackTableRemote = "fallback-table-remote"
+  /// Served from the on-disk copy of an earlier fallback-table fetch.
+  case fallbackTableCache = "fallback-table-cache"
+}
+
 public struct GatewayModelInfo: Codable, Equatable, Sendable {
   public var modelId: String
   public var name: String?
   public var description: String?
+  public var pricing: GatewayModelPricing?
 
-  public init(modelId: String, name: String? = nil, description: String? = nil) {
+  public init(
+    modelId: String,
+    name: String? = nil,
+    description: String? = nil,
+    pricing: GatewayModelPricing? = nil
+  ) {
     self.modelId = modelId
     self.name = name
     self.description = description
+    self.pricing = pricing
   }
 }
 
@@ -267,15 +317,18 @@ public struct GatewayModelCatalogResult: Codable, Equatable, Sendable {
   public var protocolVersion: String
   public var vendor: GatewayVendor
   public var models: [GatewayModelInfo]
+  public var pricingSource: GatewayModelPricingSource?
 
   public init(
     protocolVersion: String = GatewayProtocolVersion.current,
     vendor: GatewayVendor,
-    models: [GatewayModelInfo]
+    models: [GatewayModelInfo],
+    pricingSource: GatewayModelPricingSource? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.vendor = vendor
     self.models = models
+    self.pricingSource = pricingSource
   }
 }
 

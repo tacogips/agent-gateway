@@ -53,9 +53,10 @@ public struct AppCommand: Sendable {
       try writeJSONLine(result)
       return result.status == .ready ? 0 : 1
     case "models":
-      let params = try modelCatalogParams(Array(arguments.dropFirst()))
+      let (params, pricingMode) = try modelCatalogParams(Array(arguments.dropFirst()))
       do {
-        try writeJSONLine(try await ProductionGatewayExecutor().models(params))
+        let catalog = try await ProductionGatewayExecutor().models(params)
+        try writeJSONLine(await attachGatewayModelPricing(to: catalog, mode: pricingMode))
         return 0
       } catch let error as GatewayRPCError {
         FileHandle.standardError.write(
@@ -82,7 +83,7 @@ public struct AppCommand: Sendable {
       agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options] [-- <vendor-args>]
       agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
-      agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>]
+      agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
       agent-gateway --help
 
     Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
@@ -100,19 +101,39 @@ public struct AppCommand: Sendable {
     `models` lists an API vendor's available models as JSON; API-vendor ACP
     sessions also advertise them in the session/new response (`models`) and
     accept session/set_model. CLI vendors do not support enumeration.
+    `models` also attaches best-effort per-token pricing (ISO 4217 currency,
+    USD) from the LiteLLM pricing database, falling back to the pricing
+    table published in the agent-gateway GitHub repository when LiteLLM is
+    unavailable. Both sources are cached on disk for ~24h so repeat runs
+    make no requests. `--pricing auto` (default) resolves cache, remote,
+    stale cache, then the fallback table the same way; `offline` uses only
+    the caches; `off` skips pricing. Models without pricing are still
+    listed, and pricing failures never fail the command.
+    For Codex or Claude Code, --base-url selects the custom provider and
+    defaults --model to custom; --provider-name can select a named provider.
     """
   }
 
-  func modelCatalogParams(_ arguments: [String]) throws -> GatewayModelCatalogParams {
+  func modelCatalogParams(
+    _ arguments: [String]
+  ) throws -> (params: GatewayModelCatalogParams, pricingMode: GatewayModelPricingMode) {
     let (options, _) = try parseOptions(arguments)
     guard let vendorValue = options.vendor, let vendor = GatewayVendor(rawValue: vendorValue) else {
       throw Error.missingValue("--vendor")
     }
-    return GatewayModelCatalogParams(
+    var pricingMode = GatewayModelPricingMode.auto
+    if let pricingValue = options.pricing {
+      guard let mode = GatewayModelPricingMode(rawValue: pricingValue) else {
+        throw Error.missingValue("--pricing")
+      }
+      pricingMode = mode
+    }
+    let params = GatewayModelCatalogParams(
       vendor: vendor,
       apiKeyEnvironment: options.apiKeyEnvironment,
       baseURL: options.baseURL
     )
+    return (params, pricingMode)
   }
 
   /// Parses `--key value` pairs into `GatewayClientOptions`; everything
@@ -165,7 +186,7 @@ public struct AppCommand: Sendable {
     guard let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) != nil else {
       throw Error.missingValue("--vendor")
     }
-    guard options.model != nil else { throw Error.missingValue("--model") }
+    guard options.resolvedModel != nil else { throw Error.missingValue("--model") }
     return GatewayACPClientOptions(
       prompt: prompt,
       cwd: cwd,
@@ -208,6 +229,17 @@ struct GatewayClientOptions: Equatable, Sendable {
   var cursorStartingRef: String?
   var cursorWorkOnCurrentBranch: Bool?
   var cursorAutoCreatePR: Bool?
+  var pricing: String?
+
+  var usesImplicitCustomProvider: Bool {
+    baseURL != nil
+      && providerName == nil
+      && [GatewayVendor.codex.rawValue, GatewayVendor.claudeCode.rawValue].contains(vendor)
+  }
+
+  var resolvedModel: String? {
+    model ?? (usesImplicitCustomProvider ? CustomProvider.modelName : nil)
+  }
 
   var cursorAPIOptions: GatewayCursorAPIOptions? {
     guard cursorRepositoryURL != nil || cursorStartingRef != nil
@@ -223,7 +255,7 @@ struct GatewayClientOptions: Equatable, Sendable {
   func defaults(vendorArguments: [String]) -> GatewayAgentDefaults {
     GatewayAgentDefaults(
       vendor: vendor.flatMap(GatewayVendor.init(rawValue:)),
-      model: model,
+      model: resolvedModel,
       systemPrompt: systemPrompt,
       executable: executable,
       arguments: vendorArguments,
@@ -243,7 +275,7 @@ struct GatewayClientOptions: Equatable, Sendable {
       if let value { arguments += [name, value] }
     }
     flag("--vendor", vendor)
-    flag("--model", model)
+    flag("--model", resolvedModel)
     flag("--system", systemPrompt)
     flag("--executable", executable)
     flag("--provider-name", providerName)
@@ -290,6 +322,7 @@ struct GatewayClientOptions: Equatable, Sendable {
         mimeType: String(value[..<separator]),
         base64: String(value[value.index(after: separator)...])
       ))
+    case "--pricing": pricing = value
     case "--cursor-repository-url": cursorRepositoryURL = value
     case "--cursor-starting-ref": cursorStartingRef = value
     case "--cursor-work-on-current-branch": cursorWorkOnCurrentBranch = Bool(value)

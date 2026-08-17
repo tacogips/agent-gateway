@@ -37,7 +37,34 @@ import Testing
   }
 }
 
+@Test func claudeCustomRoutingClearsConflictingAnthropicKey() throws {
+  let provider = try CustomProvider.configuration(
+    baseURL: "https://api.kimi.example",
+    apiKeyEnvironmentName: "KIMI_API_KEY"
+  )
+  let environment = try AgentProviderRouting.claudeCodeEnvironment(
+    for: provider,
+    runtimeEnvironment: ["KIMI_API_KEY": "secret-value"]
+  )
+  #expect(environment == [
+    "ANTHROPIC_BASE_URL": "https://api.kimi.example",
+    "ANTHROPIC_AUTH_TOKEN": "secret-value",
+    "ANTHROPIC_API_KEY": ""
+  ])
+}
+
 @Test func openRouterUsesBackendSpecificBaseURLs() throws {
   #expect(try OpenRouterProvider.configuration(for: .codexAgent).baseUrl == "https://openrouter.ai/api/v1")
   #expect(try OpenRouterProvider.configuration(for: .claudeCodeAgent).baseUrl == "https://openrouter.ai/api")
+}
+
+@Test func customProviderUsesStableProviderAndModelNames() throws {
+  let provider = try CustomProvider.configuration(
+    baseURL: "https://api.kimi.example/v1",
+    apiKeyEnvironmentName: "KIMI_API_KEY"
+  )
+  #expect(provider.name == "custom")
+  #expect(CustomProvider.modelName == "custom")
+  #expect(provider.baseUrl == "https://api.kimi.example/v1")
+  #expect(provider.apiKeyEnv == "KIMI_API_KEY")
 }

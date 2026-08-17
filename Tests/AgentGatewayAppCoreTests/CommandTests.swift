@@ -51,6 +51,33 @@ import Testing
   #expect(defaults.arguments == ["--allowed-tools", "Bash"])
 }
 
+@Test func customBaseURLDefaultsModelForClientAndServer() throws {
+  let command = AppCommand(arguments: [])
+  let defaults = try command.serverDefaults([
+    "--vendor", "codex",
+    "--base-url", "https://api.kimi.example/v1"
+  ])
+  #expect(defaults.model == "custom")
+
+  let client = try command.clientOptions([
+    "--vendor", "claude-code",
+    "--base-url", "https://api.kimi.example",
+    "--prompt", "hello"
+  ])
+  let modelIndex = try #require(client.serverOptions.firstIndex(of: "--model"))
+  #expect(client.serverOptions[modelIndex + 1] == "custom")
+}
+
+@Test func APIBaseURLStillRequiresAnExplicitModel() throws {
+  #expect(throws: AppCommand.Error.missingValue("--model")) {
+    try AppCommand(arguments: []).clientOptions([
+      "--vendor", "openai",
+      "--base-url", "https://api.example/v1",
+      "--prompt", "hello"
+    ])
+  }
+}
+
 @Test func readinessCommandBuildsTypedParams() throws {
   let params = try AppCommand(arguments: []).readinessParams([
     "--vendor", "anthropic",

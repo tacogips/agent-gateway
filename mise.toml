@@ -45,6 +45,10 @@ run = "rm -rf .build dist release"
 description = "Run SwiftLint"
 run = "swiftlint"
 
+[tasks."update-model-prices"]
+description = "Regenerate the fallback pricing table (data/model-prices.json)"
+run = "scripts/update-model-prices.sh"
+
 [tasks."build:homebrew"]
 description = "Build Homebrew formula archives"
 run = "scripts/build-homebrew-release.sh"

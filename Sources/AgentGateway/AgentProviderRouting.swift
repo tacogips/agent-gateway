@@ -48,11 +48,27 @@ public enum AgentProviderRouting {
         throw AgentProviderRoutingError.missingRuntimeEnvironment(apiKeyEnv)
       }
       environment["ANTHROPIC_AUTH_TOKEN"] = runtimeValue
-    }
-    if provider.name == OpenRouterProvider.name {
-      environment["ANTHROPIC_API_KEY"] = ""
+      if apiKeyEnv != "ANTHROPIC_API_KEY" {
+        environment["ANTHROPIC_API_KEY"] = ""
+      }
     }
     return environment
+  }
+}
+
+public enum CustomProvider {
+  public static let name = "custom"
+  public static let modelName = "custom"
+
+  public static func configuration(
+    baseURL: String,
+    apiKeyEnvironmentName: String? = nil
+  ) throws -> AgentProviderConfiguration {
+    try AgentProviderConfiguration(
+      name: name,
+      baseUrl: baseURL,
+      apiKeyEnv: apiKeyEnvironmentName
+    )
   }
 }
 

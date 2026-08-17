@@ -67,6 +67,42 @@ import Testing
   #expect(cursor.arguments.contains("cursor-session"))
 }
 
+@Test func customBaseURLRoutesCodexAndClaudeCodeWithCustomModel() throws {
+  let codex = try cliCommand(GatewayExecuteParams(
+    vendor: .codex,
+    model: "kimi-k3",
+    prompt: "hello",
+    apiKeyEnvironment: "KIMI_API_KEY",
+    baseURL: "https://api.kimi.example/v1"
+  ))
+  #expect(codex.arguments.contains("model_provider=custom"))
+  #expect(codex.arguments.contains("model_providers.custom.base_url=https://api.kimi.example/v1"))
+  let codexModelIndex = try #require(codex.arguments.firstIndex(of: "--model"))
+  #expect(codex.arguments[codexModelIndex + 1] == "custom")
+
+  let claude = try cliCommand(GatewayExecuteParams(
+    vendor: .claudeCode,
+    model: "kimi-k3",
+    prompt: "hello",
+    baseURL: "https://api.kimi.example"
+  ))
+  #expect(claude.environment["ANTHROPIC_BASE_URL"] == "https://api.kimi.example")
+  let claudeModelIndex = try #require(claude.arguments.firstIndex(of: "--model"))
+  #expect(claude.arguments[claudeModelIndex + 1] == "custom")
+}
+
+@Test func namedProviderPreservesRequestedModel() throws {
+  let command = try cliCommand(GatewayExecuteParams(
+    vendor: .codex,
+    model: "openai/gpt-5",
+    prompt: "hello",
+    providerName: "openrouter",
+    baseURL: "https://openrouter.ai/api/v1"
+  ))
+  let modelIndex = try #require(command.arguments.firstIndex(of: "--model"))
+  #expect(command.arguments[modelIndex + 1] == "openai/gpt-5")
+}
+
 @Test func cliParserExtractsBackendSessionID() {
   let parsed = parseVendorJSON(#"{"type":"thread.started","thread_id":"thread-123"}"#, vendor: .codex)
   #expect(parsed.sessionId == "thread-123")

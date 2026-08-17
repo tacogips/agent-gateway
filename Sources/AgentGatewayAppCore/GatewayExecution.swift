@@ -383,15 +383,16 @@ struct GatewayCLICommand {
 func cliCommand(_ params: GatewayExecuteParams) throws -> GatewayCLICommand {
   let prompt = [params.systemPrompt, params.prompt].compactMap { $0 }.joined(separator: "\n\n")
   let provider = try gatewayProviderConfiguration(params)
+  let model = provider?.name == CustomProvider.name ? CustomProvider.modelName : params.model
   let executable = params.executable ?? defaultGatewayExecutable(params.vendor)
   switch params.vendor {
   case .codex:
     let overrides = AgentProviderRouting.codexConfigurationOverrides(for: provider)
       .flatMap { ["-c", $0] }
     let arguments = if params.sessionMode == .reuse, let sessionId = params.sessionId {
-      ["exec", "resume", "--json", "--model", params.model] + overrides + params.arguments + ["--", sessionId, "-"]
+      ["exec", "resume", "--json", "--model", model] + overrides + params.arguments + ["--", sessionId, "-"]
     } else {
-      ["exec", "--json", "--model", params.model] + overrides + params.arguments + ["-"]
+      ["exec", "--json", "--model", model] + overrides + params.arguments + ["-"]
     }
     return GatewayCLICommand(
       executable: executable,
@@ -408,7 +409,7 @@ func cliCommand(_ params: GatewayExecuteParams) throws -> GatewayCLICommand {
     // without it text would only arrive per completed assistant message.
     let arguments = ["-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
       + (params.sessionMode == .reuse ? params.sessionId.map { ["--resume", $0] } ?? [] : [])
-      + ["--model", params.model] + params.arguments
+      + ["--model", model] + params.arguments
     return GatewayCLICommand(
       executable: executable,
       arguments: arguments,
@@ -431,9 +432,16 @@ func cliCommand(_ params: GatewayExecuteParams) throws -> GatewayCLICommand {
 }
 
 private func gatewayProviderConfiguration(_ params: GatewayExecuteParams) throws -> AgentProviderConfiguration? {
-  guard let name = params.providerName, let baseURL = params.baseURL else { return nil }
+  guard let baseURL = params.baseURL else { return nil }
   do {
-    return try AgentProviderConfiguration(name: name, baseUrl: baseURL, apiKeyEnv: params.apiKeyEnvironment)
+    if let name = params.providerName {
+      return try AgentProviderConfiguration(name: name, baseUrl: baseURL, apiKeyEnv: params.apiKeyEnvironment)
+    }
+    guard [.codex, .claudeCode].contains(params.vendor) else { return nil }
+    return try CustomProvider.configuration(
+      baseURL: baseURL,
+      apiKeyEnvironmentName: params.apiKeyEnvironment
+    )
   } catch {
     throw GatewayRPCError(code: -32602, message: "invalid provider configuration")
   }
