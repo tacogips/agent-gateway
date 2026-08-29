@@ -197,10 +197,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     while true {
       var emittedEvent = false
       do {
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else {
-          throw GatewayRPCError(code: -32010, message: "vendor did not return an HTTP response")
-        }
+        let (lines, http) = try await gatewayResponseLines(for: request)
         if gatewayHTTPStatusIsRetryable(http.statusCode), attempt < params.retryPolicy.maxAttempts {
           try await gatewayRetryDelay(policy: params.retryPolicy, attempt: attempt)
           attempt += 1
@@ -208,7 +205,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
         }
         guard (200...299).contains(http.statusCode) else {
           var body = ""
-          for try await line in bytes.lines { body.append(line) }
+          for try await line in lines { body.append(line) }
           let detail = redactGatewaySensitiveText(environment: environment, String(body.prefix(500)), params: params)
           throw GatewayRPCError(code: -32010, message: "vendor HTTP \(http.statusCode): \(detail)")
         }
@@ -216,9 +213,11 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
         var text = ""
         var usage: GatewayUsage?
         var sessionId: String?
-        for try await line in bytes.lines {
+        for try await line in lines {
           guard line.hasPrefix("data:") else { continue }
-          let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+          // `Substring.trimmingCharacters` is Darwin-only; go through String
+          // so the SSE reader also builds on Linux.
+          let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
           guard payload != "[DONE]", !payload.isEmpty else { continue }
           let parsed = parseVendorJSON(payload, vendor: params.vendor)
           emit(parsed.event(vendorPayload: payload))
@@ -283,6 +282,48 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
       sessionId: object["id"] as? String
     )
   }
+}
+
+/// The response's lines, for the server-sent-event readers.
+///
+/// Darwin streams them as they arrive. swift-corelibs-foundation has no
+/// streaming `URLSession` API, so on other platforms the body is read first and
+/// its lines replayed: an API-vendor turn produces the same events and the same
+/// result there, just not incrementally.
+private func gatewayResponseLines(
+  for request: URLRequest
+) async throws -> (lines: AsyncThrowingStream<String, any Error>, response: HTTPURLResponse) {
+  #if canImport(Darwin)
+  let (bytes, response) = try await URLSession.shared.bytes(for: request)
+  guard let http = response as? HTTPURLResponse else {
+    throw GatewayRPCError(code: -32010, message: "vendor did not return an HTTP response")
+  }
+  let stream = AsyncThrowingStream<String, any Error> { continuation in
+    let task = Task {
+      do {
+        for try await line in bytes.lines { continuation.yield(line) }
+        continuation.finish()
+      } catch {
+        continuation.finish(throwing: error)
+      }
+    }
+    continuation.onTermination = { _ in task.cancel() }
+  }
+  return (stream, http)
+  #else
+  let (data, response) = try await URLSession.shared.data(for: request)
+  guard let http = response as? HTTPURLResponse else {
+    throw GatewayRPCError(code: -32010, message: "vendor did not return an HTTP response")
+  }
+  let body = String(data: data, encoding: .utf8) ?? ""
+  let stream = AsyncThrowingStream<String, any Error> { continuation in
+    for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+      continuation.yield(String(line))
+    }
+    continuation.finish()
+  }
+  return (stream, http)
+  #endif
 }
 
 private func gatewayHTTPStatusIsRetryable(_ status: Int) -> Bool {

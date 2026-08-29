@@ -203,11 +203,20 @@ func parseLiteLLMModelPrices(_ data: Data) -> [String: GatewayModelPricing] {
   for (model, value) in object {
     guard let entry = value as? [String: Any] else { continue }
     func cost(_ key: String) -> Double? {
+      #if canImport(Darwin)
       // NSNumber(0)/NSNumber(1) bridge to Bool, so `is Bool` would drop
       // legitimate zero-cost entries; compare the CF type instead.
       guard let number = entry[key] as? NSNumber,
         CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
       return number.doubleValue
+      #else
+      // CoreFoundation is Darwin-only. swift-corelibs-foundation decodes JSON
+      // booleans as `Bool` rather than an NSNumber that also answers to Bool,
+      // so the plain type check is exact here and zero costs survive it.
+      if entry[key] is Bool { return nil }
+      guard let number = entry[key] as? NSNumber else { return nil }
+      return number.doubleValue
+      #endif
     }
     let pricing = GatewayModelPricing(
       inputCostPerToken: cost("input_cost_per_token"),
