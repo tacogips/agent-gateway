@@ -91,6 +91,29 @@ print(result.messageText, result.thoughtText, result.response.stopReason)
 `ACPClientConnection(transport:delegate:)` connects the same API to any
 external ACP agent over stdio pipes (`ACPFileHandleTransport`).
 
+### Per-call environment
+
+`ProductionGatewayExecutor(environment:)` sets the environment the executor
+resolves vendor executables (`PATH`), credential variables, and provider
+routing against, and that the spawned vendor process inherits. It defaults to
+the host process's environment; embedding hosts pass a per-call environment so
+caller-scoped variables reach one vendor invocation without mutating the host
+process — which is what makes concurrent turns with different credentials
+safe:
+
+```swift
+let agent = GatewayACPAgent(
+  defaults: GatewayAgentDefaults(vendor: .claudeCode, model: "claude-sonnet-5"),
+  executor: ProductionGatewayExecutor(
+    environment: ProcessInfo.processInfo.environment.merging(callScoped) { _, new in new }
+  )
+)
+```
+
+`gatewayImageContentBlocks(_:)` resolves file- and data-backed images into ACP
+image content blocks the same way `agent-gateway client --image` does, so an
+embedding host does not reimplement image loading and validation.
+
 ## Vendor model catalog
 
 List an API vendor's available models from the CLI:

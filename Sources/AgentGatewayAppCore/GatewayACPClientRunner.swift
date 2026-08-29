@@ -140,26 +140,31 @@ private func promptBlocks(_ options: GatewayACPClientOptions) throws -> [ACPCont
   } else {
     text = options.prompt
   }
-  var blocks: [ACPContentBlock] = [.text(text)]
-  for image in options.images {
+  do {
+    return try [.text(text)] + gatewayImageContentBlocks(options.images)
+  } catch let error as GatewayRPCError {
+    throw AppCommand.Error.missingValue("--image: \(error.message)")
+  }
+}
+
+/// Resolves image inputs into ACP image content blocks, loading and
+/// validating file-backed images. Public so hosts that embed the gateway as a
+/// library build prompts exactly the way `agent-gateway client` does instead
+/// of reimplementing image loading.
+public func gatewayImageContentBlocks(_ images: [GatewayClientImageInput]) throws -> [ACPContentBlock] {
+  try images.map { image in
     switch image {
     case .data(let mimeType, let base64):
-      blocks.append(.image(ACPImageContent(data: base64, mimeType: mimeType)))
+      return .image(ACPImageContent(data: base64, mimeType: mimeType))
     case .filePath(let path):
-      let resolved: ResolvedGatewayImage
-      do {
-        resolved = try loadGatewayImageFile(path)
-      } catch let error as GatewayRPCError {
-        throw AppCommand.Error.missingValue("--image: \(error.message)")
-      }
-      blocks.append(.image(ACPImageContent(
+      let resolved = try loadGatewayImageFile(path)
+      return .image(ACPImageContent(
         data: resolved.dataBase64,
         mimeType: resolved.mimeType,
         uri: URL(fileURLWithPath: path).absoluteString
-      )))
+      ))
     }
   }
-  return blocks
 }
 
 /// Resolves this executable even when it was launched through a PATH lookup,

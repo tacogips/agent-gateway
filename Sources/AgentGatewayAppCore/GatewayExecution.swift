@@ -55,7 +55,16 @@ public protocol GatewayReadinessChecking: Sendable {
 }
 
 public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessChecking {
-  public init() {}
+  /// Environment used to resolve vendor executables on `PATH`, read
+  /// credential variables, and seed the child vendor process. Defaults to
+  /// this process's environment; hosts that embed the gateway as a library
+  /// pass a per-call environment so caller-scoped variables reach the vendor
+  /// without mutating the host process.
+  public let environment: [String: String]
+
+  public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+    self.environment = environment
+  }
 
   public func readiness(_ params: GatewayReadinessParams) -> GatewayReadinessResult {
     guard params.protocolVersion == GatewayProtocolVersion.current else {
@@ -67,7 +76,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     }
     if params.vendor.isCLI {
       let executable = params.executable ?? defaultGatewayExecutable(params.vendor)
-      let available = resolveGatewayExecutable(executable) != nil
+      let available = resolveGatewayExecutable(executable, environment: environment) != nil
       return GatewayReadinessResult(
         vendor: params.vendor,
         status: available ? .ready : .unavailable,
@@ -75,7 +84,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
       )
     }
     let key = params.apiKeyEnvironment ?? defaultAPIKeyEnvironment(for: params.vendor)
-    let available = ProcessInfo.processInfo.environment[key]?.isEmpty == false
+    let available = environment[key]?.isEmpty == false
     return GatewayReadinessResult(
       vendor: params.vendor,
       status: available ? .ready : .unavailable,
@@ -103,11 +112,11 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     _ params: GatewayExecuteParams,
     emit: @escaping GatewayEventEmitter
   ) async throws -> GatewayExecuteResult {
-    let command = try cliCommand(params)
+    let command = try cliCommand(params, environment: environment)
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = [command.executable] + command.arguments
-    process.environment = ProcessInfo.processInfo.environment.merging(command.environment) { _, routedValue in routedValue }
+    process.environment = environment.merging(command.environment) { _, routedValue in routedValue }
     process.currentDirectoryURL = params.workingDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
     let input = Pipe()
     let output = Pipe()
@@ -163,7 +172,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     collector.finish()
     let stderr = String(data: errorCollector.data, encoding: .utf8) ?? ""
     guard process.terminationStatus == 0 else {
-      let detail = redactGatewaySensitiveText(stderr.trimmingCharacters(in: .whitespacesAndNewlines), params: params)
+      let detail = redactGatewaySensitiveText(environment: environment, stderr.trimmingCharacters(in: .whitespacesAndNewlines), params: params)
       throw GatewayRPCError(
         code: -32002,
         message: "\(params.vendor.rawValue) exited with status \(process.terminationStatus): \(detail)"
@@ -183,7 +192,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     _ params: GatewayExecuteParams,
     emit: @escaping GatewayEventEmitter
   ) async throws -> GatewayExecuteResult {
-    let request = try makeAPIRequest(params)
+    let request = try makeAPIRequest(params, environment: environment)
     var attempt = 1
     while true {
       var emittedEvent = false
@@ -200,7 +209,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
         guard (200...299).contains(http.statusCode) else {
           var body = ""
           for try await line in bytes.lines { body.append(line) }
-          let detail = redactGatewaySensitiveText(String(body.prefix(500)), params: params)
+          let detail = redactGatewaySensitiveText(environment: environment, String(body.prefix(500)), params: params)
           throw GatewayRPCError(code: -32010, message: "vendor HTTP \(http.statusCode): \(detail)")
         }
 
@@ -243,7 +252,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     _ params: GatewayExecuteParams,
     emit: @escaping GatewayEventEmitter
   ) async throws -> GatewayExecuteResult {
-    let request = try makeAPIRequest(params)
+    let request = try makeAPIRequest(params, environment: environment)
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse else {
       throw GatewayRPCError(code: -32010, message: "Cursor did not return an HTTP response")
@@ -252,7 +261,7 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
       let body = String(bytes: data.prefix(500), encoding: .utf8) ?? "invalid UTF-8 response"
       throw GatewayRPCError(
         code: -32010,
-        message: "Cursor HTTP \(http.statusCode): \(redactGatewaySensitiveText(body, params: params))"
+        message: "Cursor HTTP \(http.statusCode): \(redactGatewaySensitiveText(environment: environment, body, params: params))"
       )
     }
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -298,11 +307,14 @@ private func defaultGatewayExecutable(_ vendor: GatewayVendor) -> String {
   }
 }
 
-private func resolveGatewayExecutable(_ executable: String) -> String? {
+private func resolveGatewayExecutable(
+  _ executable: String,
+  environment: [String: String] = ProcessInfo.processInfo.environment
+) -> String? {
   if executable.contains("/") {
     return FileManager.default.isExecutableFile(atPath: executable) ? executable : nil
   }
-  for directory in ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":") ?? [] {
+  for directory in environment["PATH"]?.split(separator: ":") ?? [] {
     let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
       .appendingPathComponent(executable).path
     if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
@@ -365,10 +377,14 @@ private func cursorAgentText(_ object: [String: Any]) -> String {
   ].compactMap { $0 }.joined(separator: "\n")
 }
 
-private func redactGatewaySensitiveText(_ text: String, params: GatewayExecuteParams) -> String {
+private func redactGatewaySensitiveText(
+  environment: [String: String],
+  _ text: String,
+  params: GatewayExecuteParams
+) -> String {
   let name = params.apiKeyEnvironment ?? defaultAPIKeyEnvironment(for: params.vendor)
   guard !name.isEmpty,
-        let value = ProcessInfo.processInfo.environment[name],
+        let value = environment[name],
         !value.isEmpty else { return text }
   return text.replacingOccurrences(of: value, with: "<redacted>")
 }
@@ -380,7 +396,10 @@ struct GatewayCLICommand {
   var stdin: String
 }
 
-func cliCommand(_ params: GatewayExecuteParams) throws -> GatewayCLICommand {
+func cliCommand(
+  _ params: GatewayExecuteParams,
+  environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> GatewayCLICommand {
   let prompt = [params.systemPrompt, params.prompt].compactMap { $0 }.joined(separator: "\n\n")
   let provider = try gatewayProviderConfiguration(params)
   let model = provider?.name == CustomProvider.name ? CustomProvider.modelName : params.model
@@ -403,7 +422,7 @@ func cliCommand(_ params: GatewayExecuteParams) throws -> GatewayCLICommand {
   case .claudeCode:
     let routedEnvironment = try AgentProviderRouting.claudeCodeEnvironment(
       for: provider,
-      runtimeEnvironment: ProcessInfo.processInfo.environment
+      runtimeEnvironment: environment
     )
     // --include-partial-messages surfaces token-level stream_event deltas;
     // without it text would only arrive per completed assistant message.

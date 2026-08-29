@@ -20,7 +20,7 @@ extension ProductionGatewayExecutor: GatewayModelListing {
     guard params.protocolVersion == GatewayProtocolVersion.current else {
       throw GatewayRPCError(code: -32602, message: "unsupported protocol version '\(params.protocolVersion)'")
     }
-    let request = try makeModelListRequest(params)
+    let request = try makeModelListRequest(params, environment: environment)
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse else {
       throw GatewayRPCError(code: -32010, message: "vendor did not return an HTTP response")
