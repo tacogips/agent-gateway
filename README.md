@@ -239,6 +239,30 @@ Swift target names and type names must be valid Swift identifiers. If the projec
 name contains hyphens, keep `PROJECT_NAME` and `EXECUTABLE_NAME` hyphenated as
 needed, but use globally distinctive, identifier-safe target names.
 
+## Embedding CLI process execution
+
+`AgentGatewayAppCore` exposes the `Sendable` `GatewayProcessRunning` protocol.
+Pass a runner to `ProductionGatewayExecutor(processRunner:processOwnership:)`
+to integrate a host's process supervisor. Requests include executable, arguments,
+environment, working directory, stdin, deadline, ownership policy, and a per-stream
+output limit. Runners emit ordered stdout/stderr chunks and return the exit code,
+captured output, and explicit truncation status. Nonzero process exits return the
+complete captured output; the executor converts them to vendor errors.
+
+The default `POSIXGatewayProcessRunner` atomically creates a dedicated process
+group before exec. Normal exit, failure, task cancellation, deadline expiry, and
+output overflow all reclaim the group before completion. The leader remains
+unreaped until group cleanup finishes, preventing stale PID/group signaling.
+The runner bounds retained and emitted output to 16 MiB per stream by default;
+the executor rejects truncated output. Callbacks must return promptly.
+
+This runner supports `.foregroundProcessGroup`: commands must remain in the
+owned group and must not daemonize, call `setsid`/`setpgid`, or hand work to an
+external service. `.allDescendants` requires an injected OS/container supervisor
+advertising that capability and is rejected before spawn by the default runner.
+Hosts must leave runner-owned children to its wait owner and preserve SIGCHLD
+disposition while runs are active. No private host integration SPI is required.
+
 ## Homebrew Formula
 
 Build local formula archives:

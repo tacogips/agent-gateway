@@ -61,9 +61,17 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
   /// pass a per-call environment so caller-scoped variables reach the vendor
   /// without mutating the host process.
   public let environment: [String: String]
+  public let processRunner: any GatewayProcessRunning
+  public let processOwnership: GatewayProcessOwnership
 
-  public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+  public init(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    processRunner: any GatewayProcessRunning = POSIXGatewayProcessRunner(),
+    processOwnership: GatewayProcessOwnership = .foregroundProcessGroup
+  ) {
     self.environment = environment
+    self.processRunner = processRunner
+    self.processOwnership = processOwnership
   }
 
   public func readiness(_ params: GatewayReadinessParams) -> GatewayReadinessResult {
@@ -113,76 +121,34 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     emit: @escaping GatewayEventEmitter
   ) async throws -> GatewayExecuteResult {
     let command = try cliCommand(params, environment: environment)
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = [command.executable] + command.arguments
-    process.environment = environment.merging(command.environment) { _, routedValue in routedValue }
-    process.currentDirectoryURL = params.workingDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
-    let input = Pipe()
-    let output = Pipe()
-    let standardError = Pipe()
-    process.standardInput = input
-    process.standardOutput = output
-    process.standardError = standardError
-
+    guard processRunner.supportedOwnership.contains(processOwnership) else {
+      throw GatewayProcessError.unsupportedOwnership(processOwnership)
+    }
     let collector = GatewayProcessCollector(vendor: params.vendor, emit: emit)
-    let errorCollector = GatewayDataCollector()
-    // EOF is observed on the reader side (empty availableData) so all bytes
-    // flow through one handler in order; mixing readDataToEndOfFile with an
-    // active readabilityHandler could interleave chunks and corrupt lines.
-    let outputEOF = GatewayProcessExitWaiter()
-    let errorEOF = GatewayProcessExitWaiter()
-    output.fileHandleForReading.readabilityHandler = { handle in
-      let data = handle.availableData
-      if data.isEmpty {
-        handle.readabilityHandler = nil
-        outputEOF.complete()
-      } else {
-        collector.consume(data)
-      }
-    }
-    standardError.fileHandleForReading.readabilityHandler = { handle in
-      let data = handle.availableData
-      if data.isEmpty {
-        handle.readabilityHandler = nil
-        errorEOF.complete()
-      } else {
-        errorCollector.consume(data)
-      }
-    }
-    let exitWaiter = GatewayProcessExitWaiter()
-    process.terminationHandler = { _ in exitWaiter.complete() }
-    do {
-      try process.run()
-    } catch {
-      output.fileHandleForReading.readabilityHandler = nil
-      standardError.fileHandleForReading.readabilityHandler = nil
-      throw GatewayRPCError(code: -32001, message: "unable to start \(params.vendor.rawValue) client")
-    }
-    establishGatewayProcessGroup(process)
-    input.fileHandleForWriting.write(Data(command.stdin.utf8))
-    try? input.fileHandleForWriting.close()
-    await withTaskCancellationHandler {
-      await exitWaiter.wait()
-      await outputEOF.wait()
-      await errorEOF.wait()
-    } onCancel: {
-      terminateGatewayProcessGroup(process)
+    let result = try await processRunner.run(GatewayProcessRequest(
+      executable: "/usr/bin/env", arguments: [command.executable] + command.arguments,
+      environment: environment.merging(command.environment) { _, routedValue in routedValue },
+      workingDirectory: params.workingDirectory, stdin: Data(command.stdin.utf8), ownership: processOwnership
+    )) { output in
+      if output.stream == .stdout { collector.consume(output.data) }
     }
     collector.finish()
-    let stderr = String(data: errorCollector.data, encoding: .utf8) ?? ""
-    guard process.terminationStatus == 0 else {
+    guard !result.outputTruncated else {
+      throw GatewayRPCError(code: -32002, message: "\(params.vendor.rawValue) exceeded the process output limit")
+    }
+    let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+    guard result.exitCode == 0 else {
       let detail = redactGatewaySensitiveText(environment: environment, stderr.trimmingCharacters(in: .whitespacesAndNewlines), params: params)
       throw GatewayRPCError(
         code: -32002,
-        message: "\(params.vendor.rawValue) exited with status \(process.terminationStatus): \(detail)"
+        message: "\(params.vendor.rawValue) exited with status \(result.exitCode): \(detail)"
       )
     }
     return GatewayExecuteResult(
       vendor: params.vendor,
       model: params.model,
       text: collector.finalText,
-      exitCode: process.terminationStatus,
+      exitCode: result.exitCode,
       usage: collector.finalUsage,
       sessionId: collector.finalSessionId ?? params.sessionId
     )
@@ -363,51 +329,6 @@ private func resolveGatewayExecutable(
   return nil
 }
 
-private final class GatewayProcessExitWaiter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var continuation: CheckedContinuation<Void, Never>?
-  private var completed = false
-
-  func wait() async {
-    await withCheckedContinuation { continuation in
-      let resumeImmediately = lock.withLock {
-        if completed { return true }
-        self.continuation = continuation
-        return false
-      }
-      if resumeImmediately { continuation.resume() }
-    }
-  }
-
-  func complete() {
-    let continuation = lock.withLock {
-      guard !completed else { return nil as CheckedContinuation<Void, Never>? }
-      completed = true
-      defer { self.continuation = nil }
-      return self.continuation
-    }
-    continuation?.resume()
-  }
-}
-
-private func establishGatewayProcessGroup(_ process: Process) {
-  let identifier = process.processIdentifier
-  guard identifier > 0 else { return }
-  _ = setpgid(identifier, identifier)
-}
-
-private func terminateGatewayProcessGroup(_ process: Process) {
-  let identifier = process.processIdentifier
-  guard identifier > 0 else { return }
-  if kill(-identifier, SIGTERM) != 0, process.isRunning {
-    process.terminate()
-  }
-  DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-    guard process.isRunning else { return }
-    _ = kill(-identifier, SIGKILL)
-  }
-}
-
 private func cursorAgentText(_ object: [String: Any]) -> String {
   if let result = object["result"] as? String, !result.isEmpty { return result }
   return [
@@ -504,22 +425,6 @@ private func gatewayProviderConfiguration(_ params: GatewayExecuteParams) throws
     )
   } catch {
     throw GatewayRPCError(code: -32602, message: "invalid provider configuration")
-  }
-}
-
-private final class GatewayDataCollector: @unchecked Sendable {
-  private let lock = NSLock()
-  private var collected = Data()
-
-  var data: Data {
-    lock.withLock { collected }
-  }
-
-  func consume(_ data: Data) {
-    guard !data.isEmpty else { return }
-    lock.withLock {
-      collected.append(data)
-    }
   }
 }
 

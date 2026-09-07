@@ -16,7 +16,8 @@ let package = Package(
   targets: [
     .target(name: "ACP"),
     .target(name: "AgentGateway"),
-    .target(name: "AgentGatewayAppCore", dependencies: ["ACP", "AgentGateway"]),
+    .target(name: "GatewayProcessNative"),
+    .target(name: "AgentGatewayAppCore", dependencies: ["ACP", "AgentGateway", "GatewayProcessNative"]),
     .executableTarget(
       name: "AgentGatewayCLI",
       dependencies: ["AgentGatewayAppCore"]
