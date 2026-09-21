@@ -371,7 +371,12 @@ func cliCommand(
     let overrides = AgentProviderRouting.codexConfigurationOverrides(for: provider)
       .flatMap { ["-c", $0] }
     let arguments = if params.sessionMode == .reuse, let sessionId = params.sessionId {
-      ["exec", "resume", "--json", "--model", model] + overrides + params.arguments + ["--", sessionId, "-"]
+      codexResumeArguments(
+        model: model,
+        overrides: overrides,
+        arguments: params.arguments,
+        sessionId: sessionId
+      )
     } else {
       ["exec", "--json", "--model", model] + overrides + params.arguments + ["-"]
     }
@@ -410,6 +415,31 @@ func cliCommand(
   case .openAI, .anthropic, .gemini, .openRouter, .cursorAPI:
     preconditionFailure("API vendor passed to CLI command builder")
   }
+}
+
+private func codexResumeArguments(
+  model: String,
+  overrides: [String],
+  arguments: [String],
+  sessionId: String
+) -> [String] {
+  var execArguments: [String] = []
+  var resumeArguments: [String] = []
+  var index = arguments.startIndex
+  while index < arguments.endIndex {
+    let argument = arguments[index]
+    if argument == "--sandbox", arguments.index(after: index) < arguments.endIndex {
+      let valueIndex = arguments.index(after: index)
+      execArguments += [argument, arguments[valueIndex]]
+      index = arguments.index(after: valueIndex)
+    } else {
+      resumeArguments.append(argument)
+      index = arguments.index(after: index)
+    }
+  }
+  return ["exec"] + execArguments
+    + ["resume", "--json", "--model", model]
+    + overrides + resumeArguments + ["--", sessionId, "-"]
 }
 
 private func gatewayProviderConfiguration(_ params: GatewayExecuteParams) throws -> AgentProviderConfiguration? {

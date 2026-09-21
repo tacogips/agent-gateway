@@ -40,11 +40,16 @@ import Testing
     vendor: .codex,
     model: "gpt-5",
     prompt: "continue",
+    arguments: ["--sandbox", "workspace-write", "--ephemeral"],
     sessionMode: .reuse,
     sessionId: "codex-session"
   ))
   #expect(codex.arguments.contains("resume"))
   #expect(codex.arguments.contains("codex-session"))
+  #expect(codex.arguments == [
+    "exec", "--sandbox", "workspace-write", "resume", "--json", "--model", "gpt-5",
+    "--ephemeral", "--", "codex-session", "-"
+  ])
 
   let claude = try cliCommand(GatewayExecuteParams(
     vendor: .claudeCode,
