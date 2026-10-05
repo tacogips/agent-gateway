@@ -12,6 +12,7 @@ library (client, agent server, stdio/in-memory transports) usable on its own.
 - CLI clients: Claude Code, Codex, and Cursor.
 - Direct APIs: OpenAI Responses, Anthropic Messages, Gemini
   `streamGenerateContent`, OpenRouter Chat Completions, and Cursor Cloud Agents.
+- Decision models: TypeSafe Jev through OpenRouter Decisions (`choice`, `score`, `noul`).
 - Alternate provider routing for Codex and Claude Code, including OpenRouter.
 
 Provider credentials are referenced by environment-variable name. Secret values
@@ -113,6 +114,79 @@ let agent = GatewayACPAgent(
 `gatewayImageContentBlocks(_:)` resolves file- and data-backed images into ACP
 image content blocks the same way `agent-gateway client --image` does, so an
 embedding host does not reimplement image loading and validation.
+
+## Jev decisions through OpenRouter
+
+Use `decide` for classification, scoring, and routing with Jev. It sends a
+non-streaming request to OpenRouter's `/api/alpha/decisions` endpoint.
+Your application applies its own thresholds and actions to the returned answers.
+
+Save this request as `decision.json`:
+
+```json
+{
+  "model": "typesafe/jev-1.13",
+  "state": "Please refund the duplicate charge on my invoice.",
+  "questions": {
+    "team": {
+      "type": "choice",
+      "instructions": "Which team should handle this request?",
+      "criteria": {"billing": "Invoices and refunds", "support": "Product problems"}
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this request?",
+      "criteria": ["Routine", "Time sensitive", "Blocking"]
+    },
+    "refund": {"type": "noul", "instructions": "Is a refund requested?"}
+  }
+}
+```
+
+With `OPENROUTER_API_KEY` set in your environment:
+
+```bash
+agent-gateway decide --request decision.json
+cat decision.json | agent-gateway decide --request -
+```
+
+stdout contains one JSON object with typed `answers`, the resolved `model`,
+request `id`, `provider`, and `usage` including token counts and cost.
+Choice and score answers retain their probabilities and confidence; score also
+retains its legend. Noul returns a single probability and has no separate confidence.
+State may be a string, object, or array. The model is explicit; use
+`~typesafe/jev-latest` to follow the latest Jev release.
+Optional request fields `provider`, `session_id`, `trace`, and `user` are preserved.
+`session_id` groups requests for observability; it does not provide conversation memory.
+
+`--api-key-environment TOKEN` selects a different credential variable.
+`--base-url https://proxy.example/api/alpha` overrides the decision API base;
+`decisions` is appended. Use the alpha base, rather than the chat `/api/v1` base.
+HTTPS is required except for loopback HTTP. Failures go to stderr with a nonzero
+exit status. Transient HTTP/transport failures retry with bounded backoff;
+invalid requests and responses fail without producing decision output.
+
+Swift hosts can call the same API:
+
+```swift
+import ACP
+import AgentGatewayAppCore
+
+let client = GatewayDecisionClient(environment: callScopedEnvironment)
+let result = try await client.decide(GatewayDecisionRequest(
+  state: .string("Please refund the duplicate charge."),
+  questions: ["refund": .noul(instructions: "Is a refund requested?")]
+))
+if case .noul(let probability) = result.answers["refund"] {
+  print(probability)
+}
+```
+
+`GatewayDeciding` provides an injection boundary for application code. The client
+also accepts a `URLSession` and retry policy. Decisions use this typed API and
+`decide` command; ACP `session/prompt` and `client --prompt` remain chat operations.
+The [OpenRouter Decisions reference](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request)
+documents the upstream alpha contract.
 
 ## Vendor model catalog
 

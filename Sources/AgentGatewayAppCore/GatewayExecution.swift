@@ -292,11 +292,11 @@ private func gatewayResponseLines(
   #endif
 }
 
-private func gatewayHTTPStatusIsRetryable(_ status: Int) -> Bool {
+func gatewayHTTPStatusIsRetryable(_ status: Int) -> Bool {
   status == 408 || status == 409 || status == 429 || (500...599).contains(status)
 }
 
-private func gatewayRetryDelay(policy: GatewayRetryPolicy, attempt: Int) async throws {
+func gatewayRetryDelay(policy: GatewayRetryPolicy, attempt: Int) async throws {
   let multiplier = 1 << min(max(0, attempt - 1), 16)
   let milliseconds = min(
     policy.maximumDelayMilliseconds,
