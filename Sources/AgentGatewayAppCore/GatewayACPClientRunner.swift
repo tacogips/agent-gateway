@@ -50,6 +50,7 @@ public struct GatewayACPClientRunner: Sendable {
   public init() {}
 
   public func run(options: GatewayACPClientOptions) async throws -> Int32 {
+    #if os(macOS) || os(Linux)
     let process = Process()
     if let agentExecutable = options.agentExecutable {
       process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -114,6 +115,9 @@ public struct GatewayACPClientRunner: Sendable {
       }
       throw error
     }
+    #else
+    throw GatewayProcessError.launchFailed(ENOTSUP)
+    #endif
   }
 }
 

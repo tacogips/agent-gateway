@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #ifdef __APPLE__
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #else
 #include <dirent.h>
@@ -32,6 +33,10 @@ static int owned_pipe(int pair[2]) {
 }
 
 int gwp_spawn(const char *path, char *const argv[], char *const envp[], const char *cwd, gwp_process *result) {
+#if defined(__APPLE__) && !TARGET_OS_OSX
+    *result = (gwp_process){0, -1, -1, -1};
+    return ENOTSUP;
+#else
     int descriptors[6] = {-1, -1, -1, -1, -1, -1};
     int error = 0;
     *result = (gwp_process){0, -1, -1, -1};
@@ -75,6 +80,7 @@ close_descriptors:
     for (int index = 0; index < 6; index++) if (descriptors[index] >= 0) close(descriptors[index]);
     return error;
 #undef CHECK
+#endif
 }
 
 int gwp_observe_exit(pid_t pid) {

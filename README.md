@@ -19,6 +19,14 @@ are never placed in Codex arguments or returned by the routing API.
 
 ## SwiftPM dependency
 
+The `AgentGateway`, `AgentGatewayAppCore`, and `ACP` library products support
+iOS / iPadOS 17+ and macOS 14+. On iOS / iPadOS, embed the gateway in-process
+and use HTTP API vendors (`openai`, `anthropic`, `gemini`, `openrouter`, or
+`cursor-api`). Process-based CLI vendors (`claude-code`, `codex`, and `cursor`)
+cannot launch there; the native process runner and `GatewayACPClientRunner`
+report `GatewayProcessError.launchFailed(ENOTSUP)`. The `agent-gateway`
+executable is for macOS / Linux.
+
 ```swift
 .package(path: "../agent-gateway")
 ```
