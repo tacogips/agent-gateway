@@ -23,7 +23,7 @@ public struct AppCommand: Sendable {
       return usage
     }
 
-    if ["server", "client", "readiness", "models"].contains(arguments.first) {
+    if ["server", "client", "readiness", "models", "decide"].contains(arguments.first) {
       return ""
     }
 
@@ -35,7 +35,16 @@ public struct AppCommand: Sendable {
   }
 
   public func runStreaming() async throws -> Int32 {
+    if arguments.contains("--help") || arguments.contains("-h") || arguments.contains("--version") { return 0 }
     switch arguments.first {
+    case "decide":
+      let options = try decisionOptions(Array(arguments.dropFirst()))
+      let request = try options.loadRequest()
+      let client = GatewayDecisionClient(
+        apiKeyEnvironment: options.apiKeyEnvironment, baseURL: options.baseURL
+      )
+      try writeJSONLine(try await client.decide(request))
+      return 0
     case "server":
       let defaults = try serverDefaults(Array(arguments.dropFirst()))
       let server = ACPAgentServer(
@@ -84,6 +93,7 @@ public struct AppCommand: Sendable {
       agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
+      agent-gateway decide --request <json-file|-> [--api-key-environment <name>] [--base-url <url>]
       agent-gateway --help
 
     Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
@@ -109,6 +119,10 @@ public struct AppCommand: Sendable {
     stale cache, then the fallback table the same way; `offline` uses only
     the caches; `off` skips pricing. Models without pricing are still
     listed, and pricing failures never fail the command.
+    `decide` evaluates typed Jev questions through OpenRouter Decisions and
+    prints one JSON result, including probabilities, confidence, and usage.
+    The request JSON supplies model, state, and questions (choice/score/noul).
+    Its base URL defaults to https://openrouter.ai/api/alpha.
     For Codex or Claude Code, --base-url selects the custom provider and
     defaults --model to custom; --provider-name can select a named provider.
     """
