@@ -23,6 +23,14 @@ are never placed in Codex arguments or returned by the routing API.
 
 ## SwiftPM dependency
 
+The `AgentGateway`, `AgentGatewayAppCore`, and `ACP` library products support
+iOS / iPadOS 17+ and macOS 14+. On iOS / iPadOS, embed the gateway in-process
+and use HTTP API vendors (`openai`, `anthropic`, `gemini`, `openrouter`, or
+`cursor-api`). Process-based CLI vendors (`claude-code`, `codex`, and `cursor`)
+cannot launch there; the native process runner and `GatewayACPClientRunner`
+report `GatewayProcessError.launchFailed(ENOTSUP)`. The `agent-gateway`
+executable is for macOS / Linux.
+
 ```swift
 .package(path: "../agent-gateway")
 ```
@@ -252,6 +260,45 @@ The result's `pricingSource` field reports which layer answered
 (`litellm-remote`, `litellm-cache`, `fallback-table-remote`, or
 `fallback-table-cache`). Regenerate the fallback table with
 `mise run update-model-prices`.
+
+## Audio transcription
+
+`AgentGatewayAppCore` exposes `GatewayTranscribing` on `ProductionGatewayExecutor`
+for local audio files using OpenAI, Gemini, or OpenRouter:
+
+```swift
+import AgentGateway
+import AgentGatewayAppCore
+import Foundation
+
+let transcript = try await ProductionGatewayExecutor().transcribe(
+  GatewayTranscriptionParams(
+    vendor: .openAI,
+    model: "whisper-1",
+    audioFile: URL(fileURLWithPath: "/path/to/recording.m4a"),
+    mimeType: "audio/mp4",
+    language: "ja",
+    prompt: "Stria"
+  )
+)
+print(transcript.text)
+```
+
+`GatewayTranscriptionModels.defaults` provides curated model suggestions:
+
+- OpenAI: `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `whisper-1`.
+- Gemini: `gemini-3.5-flash-lite`, `gemini-3.8-flash`.
+- OpenRouter: `openai/gpt-4o-audio-preview`, `google/gemini-3.5-flash-lite`.
+
+Callers may supply any model ID supported by their vendor. Credentials use the
+same vendor environment names as model listing; `apiKeyEnvironment` and `baseURL`
+can override them. A nil language requests automatic detection; an optional
+prompt supplies vocabulary/context. The default timeout is 120 seconds and task
+cancellation cancels the URLSession request. Audio must be a local regular file,
+at most 25 MB (25,000,000 bytes). Supported MIME types include WAV, MP3, M4A/MP4,
+WebM, Ogg, FLAC, and AAC; individual vendors/models may accept fewer formats.
+Empty transcripts are valid. Anthropic, Cursor API, and CLI vendors return
+`gatewayTranscriptionUnsupportedCode` (`-32021`) before file or network I/O.
 
 ## Provider routing library
 

@@ -5,7 +5,8 @@ import PackageDescription
 let package = Package(
   name: "agent-gateway",
   platforms: [
-    .macOS(.v14)
+    .macOS(.v14),
+    .iOS(.v17)
   ],
   products: [
     .library(name: "ACP", targets: ["ACP"]),
