@@ -127,3 +127,36 @@ import Testing
     vendor: .gemini
   ).delta == "gemini")
 }
+
+@Test func webSearchSelectsEachAPIVendorHostedSearchTool() throws {
+  func body(_ vendor: GatewayVendor, _ key: String) throws -> [String: Any] {
+    let request = try makeAPIRequest(
+      GatewayExecuteParams(vendor: vendor, model: "model", prompt: "search", webSearch: true),
+      environment: [key: "secret"]
+    )
+    let data = try #require(request.httpBody)
+    return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+  }
+  let gemini = try #require(try body(.gemini, "GEMINI_API_KEY")["tools"] as? [[String: Any]])
+  #expect(gemini.first?["google_search"] != nil)
+  let anthropic = try #require(try body(.anthropic, "ANTHROPIC_API_KEY")["tools"] as? [[String: Any]])
+  #expect(anthropic.first?["name"] as? String == "web_search")
+  let openAI = try #require(try body(.openAI, "OPENAI_API_KEY")["tools"] as? [[String: Any]])
+  #expect(openAI.first?["type"] as? String == "web_search")
+  let openRouter = try #require(try body(.openRouter, "OPENROUTER_API_KEY")["plugins"] as? [[String: Any]])
+  #expect(openRouter.first?["id"] as? String == "web")
+  #expect(throws: GatewayRPCError.self) {
+    try makeAPIRequest(GatewayExecuteParams(vendor: .cursorAPI, model: "m", prompt: "p", webSearch: true),
+      environment: ["CURSOR_API_KEY": "secret"])
+  }
+}
+
+@Test func apiRequestsSendNoToolsByDefault() throws {
+  for (vendor, key) in [(GatewayVendor.gemini, "GEMINI_API_KEY"), (.anthropic, "ANTHROPIC_API_KEY"),
+    (.openAI, "OPENAI_API_KEY"), (.openRouter, "OPENROUTER_API_KEY")] {
+    let request = try makeAPIRequest(GatewayExecuteParams(vendor: vendor, model: "m", prompt: "p"), environment: [key: "s"])
+    let data = try #require(request.httpBody)
+    let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(body["tools"] == nil && body["plugins"] == nil)
+  }
+}

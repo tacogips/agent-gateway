@@ -107,6 +107,9 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
     if params.sessionMode == .reuse {
       body["previous_response_id"] = params.sessionId
     }
+    if params.webSearch {
+      body["tools"] = [["type": "web_search"]]
+    }
     return body
   case .anthropic:
     var content: [[String: Any]] = [["type": "text", "text": params.prompt]]
@@ -120,6 +123,9 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
       "stream": true
     ]
     body["system"] = params.systemPrompt
+    if params.webSearch {
+      body["tools"] = [["type": "web_search_20250305", "name": "web_search"]]
+    }
     return body
   case .gemini:
     var parts: [[String: Any]] = [["text": params.prompt]]
@@ -128,7 +134,11 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
     if let systemPrompt = params.systemPrompt {
       contents.insert(["role": "user", "parts": [["text": systemPrompt]]], at: 0)
     }
-    return ["contents": contents]
+    var body: [String: Any] = ["contents": contents]
+    if params.webSearch {
+      body["tools"] = [["google_search": [String: Any]()]]
+    }
+    return body
   case .openRouter:
     var messages: [[String: Any]] = []
     if let systemPrompt = params.systemPrompt {
@@ -137,10 +147,19 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
     var content: [[String: Any]] = [["type": "text", "text": params.prompt]]
     content += images.map { ["type": "image_url", "image_url": ["url": $0.dataURL]] }
     messages.append(["role": "user", "content": content])
-    return ["model": params.model, "messages": messages, "stream": true, "stream_options": ["include_usage": true]]
+    var body: [String: Any] = [
+      "model": params.model, "messages": messages, "stream": true, "stream_options": ["include_usage": true]
+    ]
+    if params.webSearch {
+      body["plugins"] = [["id": "web"]]
+    }
+    return body
   case .cursorAPI:
     guard images.isEmpty else {
       throw GatewayRPCError(code: -32602, message: "cursor-api does not support gateway image inputs")
+    }
+    guard !params.webSearch else {
+      throw GatewayRPCError(code: -32602, message: "cursor-api does not support gateway web search")
     }
     var body: [String: Any] = [
       "prompt": ["text": [params.systemPrompt, params.prompt].compactMap { $0 }.joined(separator: "\n\n")],

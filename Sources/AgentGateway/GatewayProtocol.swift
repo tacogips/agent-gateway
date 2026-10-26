@@ -127,6 +127,9 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
   public var cursorAPI: GatewayCursorAPIOptions?
   public var images: [GatewayImageInput]
   public var retryPolicy: GatewayRetryPolicy
+  /// Enables the vendor's own hosted web search tool for API vendors. CLI
+  /// vendors select tools through their arguments instead.
+  public var webSearch: Bool
 
   public init(
     protocolVersion: String = GatewayProtocolVersion.current,
@@ -145,7 +148,8 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
     sessionId: String? = nil,
     cursorAPI: GatewayCursorAPIOptions? = nil,
     images: [GatewayImageInput] = [],
-    retryPolicy: GatewayRetryPolicy = GatewayRetryPolicy()
+    retryPolicy: GatewayRetryPolicy = GatewayRetryPolicy(),
+    webSearch: Bool = false
   ) {
     self.protocolVersion = protocolVersion
     self.vendor = vendor
@@ -164,6 +168,7 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
     self.cursorAPI = cursorAPI
     self.images = images
     self.retryPolicy = retryPolicy
+    self.webSearch = webSearch
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -184,6 +189,7 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
     case cursorAPI
     case images
     case retryPolicy
+    case webSearch
   }
 
   public init(from decoder: any Decoder) throws {
@@ -206,7 +212,8 @@ public struct GatewayExecuteParams: Codable, Equatable, Sendable {
       sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId),
       cursorAPI: try container.decodeIfPresent(GatewayCursorAPIOptions.self, forKey: .cursorAPI),
       images: try container.decodeIfPresent([GatewayImageInput].self, forKey: .images) ?? [],
-      retryPolicy: try container.decodeIfPresent(GatewayRetryPolicy.self, forKey: .retryPolicy) ?? GatewayRetryPolicy()
+      retryPolicy: try container.decodeIfPresent(GatewayRetryPolicy.self, forKey: .retryPolicy) ?? GatewayRetryPolicy(),
+      webSearch: try container.decodeIfPresent(Bool.self, forKey: .webSearch) ?? false
     )
   }
 }

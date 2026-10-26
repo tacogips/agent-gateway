@@ -12,6 +12,9 @@ library (client, agent server, stdio/in-memory transports) usable on its own.
 - CLI clients: Claude Code, Codex, and Cursor.
 - Direct APIs: OpenAI Responses, Anthropic Messages, Gemini
   `streamGenerateContent`, OpenRouter Chat Completions, and Cursor Cloud Agents.
+  Direct API requests send no tools. `webSearch: true` enables only the vendor's
+  hosted search (`web_search`, Anthropic `web_search`, Gemini `google_search`,
+  OpenRouter `web` plugin); Cursor Cloud Agents reject it.
 - Decision models: TypeSafe Jev through OpenRouter Decisions (`choice`, `score`, `noul`).
 - Alternate provider routing for Codex and Claude Code, including OpenRouter.
 
