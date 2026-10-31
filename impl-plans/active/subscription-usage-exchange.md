@@ -46,6 +46,14 @@ The wave-2 reader plan uses this helper for both Claude and Codex.
 - `Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift` (new)
 - `Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift` (new)
 - `impl-plans/active/subscription-usage-exchange.md` (this plan's progress log only)
+- `tmp/subscription-usage-build/subscription-usage-exchange` (generated-output
+  root and artifact root: SwiftPM scratch directory, swiftlint cache and
+  verification logs; gitignored, never committed)
+
+All SwiftPM output for this plan goes to that root (`--scratch-path`). Never
+build into the default `.build`, because sibling wave-1 plans build at the
+same time. Test fake scripts go in system temp directories (see Tests), not
+in this root.
 
 Do not touch `ACPTransport.swift`, `GatewayProcessNative`,
 `GatewayACPClientRunner.swift`, `POSIXGatewayProcessRunner.swift`, or any
@@ -131,11 +139,19 @@ macOS and Linux, the body is only `throw GatewayProcessError.launchFailed(ENOTSU
   iOS 17 library builds must compile.
 - Parallel siblings edit the same tree. If `swift build` fails in a file you
   do not own, wait and retry; never edit it.
+- Edit discipline: re-read each owned file right before every edit. Record
+  `shasum -a 256 <owned files>` in the progress log before the first edit and
+  after the last one. If an owned file's content changes between your own
+  edits (drift), stop and record it in the progress log; do not overwrite it.
+  Cross-plan repair happens serially after the wave joins.
 
 ## Tests (`GatewayJSONLineExchangeTests.swift`, `@testable import AgentGatewayAppCore`)
 
 Prefix every test function name with `jsonLineExchange`. Each test writes a
-`#!/bin/sh` script into its own temp directory, chmods it to 0755, uses
+`#!/bin/sh` script into its own temp directory under
+`FileManager.default.temporaryDirectory`, named with the prefix
+`agent-gateway-jsonline-test-` plus a UUID, so the orphan check below can find
+leftover children. It chmods the script to 0755, uses
 `environment: ["PATH": "/usr/bin:/bin"]`, and removes the directory in `defer`.
 The matcher in every test is "the line parses as a JSON object with `id == 2`".
 
@@ -160,23 +176,39 @@ The matcher in every test is "the line parses as a JSON object with `id == 2`".
 
 ## Verification (repository root, foreground)
 
+Run `mkdir -p tmp/subscription-usage-build/subscription-usage-exchange/logs`
+first. Redirect to a file instead of piping through `tee`, so `echo exit=$?`
+reports the Swift exit status.
+
 | Command | Must show |
 | --- | --- |
-| `swift build 2>&1 \| tee /tmp/sub-usage-exchange-build.log; echo exit=$?` | exit=0 |
-| `swift test --filter jsonLineExchange 2>&1 \| tee /tmp/sub-usage-exchange-test.log` | the 5 tests pass, 0 failures, total under 30 s |
-| `swiftlint lint Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift` | 0 violations |
+| `swift build --scratch-path tmp/subscription-usage-build/subscription-usage-exchange > tmp/subscription-usage-build/subscription-usage-exchange/logs/build.log 2>&1; echo exit=$?` | exit=0 |
+| `swift test --scratch-path tmp/subscription-usage-build/subscription-usage-exchange --filter jsonLineExchange > tmp/subscription-usage-build/subscription-usage-exchange/logs/test.log 2>&1; echo exit=$?` | exit=0; the log shows the 5 `jsonLineExchange*` tests passed, 0 failures, total under 30 s |
+| `swiftlint lint --cache-path tmp/subscription-usage-build/subscription-usage-exchange/swiftlint-cache Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift; echo exit=$?` | 0 violations, exit=0 |
 | `grep -n "Process()" Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift` plus a manual check | every `Process` use is inside `#if os(macOS) \|\| os(Linux)` |
-| `ps -A -o command \| grep -c "[w]hile IFS"` after the tests | 0 (no orphaned fake children) |
+| `grep -n "FileHandle.write\|\.send(line\|signal(" Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift` | no output |
+| `ps -A -o command \| grep -c "[a]gent-gateway-jsonline-test-"` after the tests | `0` (no orphaned fake children; grep exits 1 when the count is 0, which is expected) |
+| `git status --porcelain --untracked-files=all` | this plan adds or changes only its owned files (`tmp/` is ignored) |
 
-Record the commands, exit statuses and log paths in the progress log.
+Record the commands, exit statuses and full log paths under
+`tmp/subscription-usage-build/subscription-usage-exchange/logs/` in the
+progress log. A truncated log, or a run that is still going, does not count
+as a pass.
 
 ## Done Criteria
 
 - [ ] The signatures match the Contract section exactly.
 - [ ] There are no `FileHandle.write`, `transport.send` or `signal(` calls in the owned source file.
 - [ ] All `jsonLineExchange*` tests pass, and the build and lint checks are clean.
-- [ ] `git diff --name-only` shows only the owned files.
+- [ ] `git status --porcelain --untracked-files=all` shows only the owned files.
+- [ ] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-exchange`.
 
 ## Progress Log
 
 - 2026-10-31: Plan created.
+- 2026-11-01: Amended (session-593). Added the plan-unique artifact root
+  `tmp/subscription-usage-build/subscription-usage-exchange`. Verification
+  now uses `--scratch-path` and `--cache-path`, with logs under the root and
+  no `tee`. The orphan check now greps the fake-script temp-dir prefix,
+  because the old `[w]hile IFS` pattern never matches the `/bin/sh <script>`
+  command line.

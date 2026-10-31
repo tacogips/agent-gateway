@@ -66,6 +66,19 @@ in the progress log. Do not edit the wave-1 files.
   params builder and usage text.
 - `Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift` (new)
 - `impl-plans/active/subscription-usage-reader-cli.md` (this plan's progress log only)
+- `tmp/subscription-usage-build/subscription-usage-reader-cli`
+  (generated-output root and artifact root: SwiftPM scratch directory,
+  swiftlint cache, verification logs and smoke outputs; gitignored, never
+  committed)
+
+All SwiftPM output for this plan, including the `swift run` smoke tests, goes
+to that root (`--scratch-path`). Do not build into the default `.build`.
+
+Edit discipline: re-read each owned file right before every edit. Record
+`shasum -a 256 <owned files>` in the progress log before the first edit and
+after the last one, and record the wave-1 files' hashes when you start. If any
+owned or wave-1 file changes unexpectedly (drift), stop and record it; do not
+overwrite it. Cross-plan repair happens serially after the join.
 
 ## Contract
 
@@ -271,20 +284,28 @@ network.
 
 ## Verification (repository root, foreground)
 
+`R` below means `tmp/subscription-usage-build/subscription-usage-reader-cli`.
+Write the full path in the actual commands. Run `mkdir -p <R>/logs` first.
+Redirect to files instead of piping through `tee`, so `echo exit=$?` reports
+the command's own exit status. The `swift run` smokes use `--skip-build`
+after the build step, so the outputs contain only the command's own output.
+
 | Command | Must show |
 | --- | --- |
-| `swift build 2>&1 \| tee /tmp/sub-usage-reader-build.log; echo exit=$?` | exit=0 |
-| `swift test --filter subscriptionUsage 2>&1 \| tee /tmp/sub-usage-reader-test.log` | all `subscriptionUsage*` tests pass (including the wave-1 `subscriptionUsageTypes*` tests), 0 failures |
-| `swiftlint lint Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayExecution.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift` | 0 violations |
+| `swift build --scratch-path <R> > <R>/logs/build.log 2>&1; echo exit=$?` | exit=0 |
+| `swift test --scratch-path <R> --filter subscriptionUsage > <R>/logs/test.log 2>&1; echo exit=$?` | exit=0; the log shows every `subscriptionUsage*` test passed (including the wave-1 `subscriptionUsageTypes*` tests), 0 failures |
+| `swiftlint lint --cache-path <R>/swiftlint-cache Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayExecution.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift; echo exit=$?` | 0 violations, exit=0 |
 | `git diff -U0 Sources/AgentGatewayAppCore/GatewayExecution.swift` | only the two `private` removals |
 | `grep -rn -- "-3203[01]" Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift` | no output |
-| `swift run agent-gateway subscription-usage --vendor openai; echo exit=$?` | stderr contains `subscription usage failed (-32040)`, exit=1 |
-| `swift run agent-gateway subscription-usage --vendor codex; echo exit=$?` | one JSON line with `"vendor":"codex"`, exit=0 (live; record it as a gap if the sandbox blocks the CLI or network) |
-| `swift run agent-gateway subscription-usage --vendor claude-code; echo exit=$?` | one JSON line with `"vendor":"claude-code"`, exit=0 (live; about 20 s; same gap rule) |
+| `swift run --scratch-path <R> --skip-build agent-gateway subscription-usage --vendor openai > <R>/logs/smoke-openai.out 2> <R>/logs/smoke-openai.err; echo exit=$?` | exit=1; `smoke-openai.err` contains `subscription usage failed (-32040)` |
+| `swift run --scratch-path <R> --skip-build agent-gateway subscription-usage --vendor codex > <R>/logs/smoke-codex.out 2> <R>/logs/smoke-codex.err; echo exit=$?` | exit=0; `smoke-codex.out` is one JSON line with `"vendor":"codex"` (live; if the sandbox blocks the CLI or network, record a gap with the stderr, not a pass) |
+| `swift run --scratch-path <R> --skip-build agent-gateway subscription-usage --vendor claude-code > <R>/logs/smoke-claude.out 2> <R>/logs/smoke-claude.err; echo exit=$?` | exit=0; `smoke-claude.out` is one JSON line with `"vendor":"claude-code"` (live; about 20 s; same gap rule) |
+| `git status --porcelain --untracked-files=all` | this plan adds or changes only its owned files (`tmp/` is ignored) |
 
 The full `mise run build`, `mise run test` and `mise run lint` gates run at
-integration review after all plans join. Record every command, exit status and
-log path in the progress log.
+integration review after all plans join, using the default `.build`. Record
+every command, exit status and full log path under `<R>/logs/` in the progress
+log. A truncated log, or a run that is still going, does not count as a pass.
 
 ## Done Criteria
 
@@ -292,8 +313,13 @@ log path in the progress log.
 - [ ] Validation order and error messages match "Required Behavior".
 - [ ] All the listed tests exist and pass, and the build and lint checks above are clean.
 - [ ] `--vendor openai` exits 1 with -32040, verified.
-- [ ] Only the owned files changed (`git diff --name-only`).
+- [ ] Only the owned files changed (`git status --porcelain --untracked-files=all`).
+- [ ] No `.build` output was produced by this plan; all build and smoke output is under `tmp/subscription-usage-build/subscription-usage-reader-cli`.
 
 ## Progress Log
 
 - 2026-10-31: Plan created.
+- 2026-11-01: Amended (session-593). Added the plan-unique artifact root
+  `tmp/subscription-usage-build/subscription-usage-reader-cli`. Build, test
+  and `swift run` smokes now use `--scratch-path`, swiftlint uses
+  `--cache-path`, and logs go under the root with no `tee`.

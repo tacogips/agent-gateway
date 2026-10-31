@@ -66,6 +66,10 @@ already taken, so subscription usage must not reuse them:
   and the invalid decision response are hard-coded in
   `GatewayDecisions.swift` and `GatewayDecisionValidation.swift`.
 
+The request gave `-32030`/`-32031` only as an example ("e.g."). Reusing them
+would make a subscription-usage failure indistinguishable from a decide
+failure, so this design intentionally uses the next free pair instead.
+
 ## Validation And Errors
 
 Checks run in this order. Each failure is a `GatewayRPCError`.
@@ -267,6 +271,27 @@ network access:
 Commands: `mise run build`, `mise run test`, `mise run lint`. Live smoke test,
 where both CLIs are signed in: `swift run agent-gateway subscription-usage
 --vendor codex`, `--vendor claude-code`, and `--vendor openai` (expect exit 1).
+
+### Build Output Isolation
+
+Implementation plans run in parallel in one working tree. Each plan therefore
+owns its own generated-output root, `tmp/subscription-usage-build/<planId>`
+(`tmp/` is gitignored and excluded in `.swiftlint.yml`):
+
+- Every plan in the dispatch manifest lists that root in both `writePaths` and
+  `artifactRoots`. This includes `subscription-usage-readme`, which runs no
+  Swift build.
+- Every per-plan SwiftPM command passes `--scratch-path <root>`:
+  `swift build --scratch-path <root>`,
+  `swift test --scratch-path <root> --filter <suite>`, and
+  `swift run --scratch-path <root> agent-gateway subscription-usage ...` for
+  the smoke tests.
+- `swiftlint lint` builds nothing, so it does not need a scratch path. It runs
+  with `--cache-path <root>/swiftlint-cache`, so its cache also stays inside
+  the plan root.
+- Verification logs go under `<root>/logs/`, not `/tmp`.
+- Only the final integration verification (`mise run build`, `mise run test`,
+  `mise run lint`) uses the default `.build`.
 
 ## Rollout Constraints
 

@@ -4,7 +4,7 @@
   "implementationBranch": "feat/subscription-usage",
   "baseBranch": "main",
   "remote": "origin",
-  "originalHead": "64361c28bfaf1dcea1b28ccf99329796053454ab",
+  "originalHead": "6130047df2c48281d52250f027987e7f121b43e1",
   "designDocPaths": [
     "design-docs/specs/design-subscription-usage.md",
     "design-docs/specs/command.md"
@@ -47,13 +47,15 @@
       "parseGatewayISO8601Date has package access and truncates fractions to 3 digits, because ISO8601DateFormatter rejects Claude's 6-digit fractions. This avoids widening the public API.",
       "Claude model_scoped entries become weekly windows with the display name as scope. When model_scoped is absent, the legacy seven_day_opus/seven_day_sonnet keys are the fallback.",
       "Codex rateLimitsByLimitId ordering puts the codex bucket first as plan-wide (scope nil) and sorts the other keys with scope limitName ?? limitId. When that map is absent, rateLimits is the fallback.",
-      "The validation order is fixed: protocol version, vendor, timeout, executable resolution, then exchange. No process is spawned before resolution."
+      "The validation order is fixed: protocol version, vendor, timeout, executable resolution, then exchange. No process is spawned before resolution.",
+      "Each plan owns a plan-unique generated-output root tmp/subscription-usage-build/<planId> (gitignored, excluded in .swiftlint.yml), listed in both writePaths and artifactRoots. Per-plan swift build/test/run use --scratch-path <root>, swiftlint uses --cache-path <root>/swiftlint-cache, and logs go to <root>/logs through plain redirection instead of tee, so echo exit=$? reports the real exit status. Only integration verification uses the default .build."
     ],
     "intentionalTradeoffs": [
       "A Codex initialize failure waits until the timeout (default 60 s) instead of failing early.",
       "The vendor stdio protocols are undocumented (verified against claude 2.1.312 and codex-cli 0.166.0). The parsers tolerate missing and extra keys, and a shape change shows up as -32041 or as missing windows.",
       "Wave-1 plans share one working tree, so implementers wait and retry on transient sibling compile failures instead of cross-editing.",
-      "The live claude-code and codex smokes depend on sandbox CLI and network access. If they are blocked, they are recorded as gaps, not passes."
+      "The live claude-code and codex smokes depend on sandbox CLI and network access. If they are blocked, they are recorded as gaps, not passes.",
+      "Four separate scratch roots mean four cold SwiftPM builds (extra disk and time), in exchange for no .build contention between parallel implementers."
     ],
     "supportedEdgeCases": [
       "Claude resets_at with 6 fractional digits.",
@@ -99,24 +101,29 @@
       "writePaths": [
         "Sources/AgentGateway/GatewaySubscriptionUsage.swift",
         "Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift",
-        "impl-plans/active/subscription-usage-types.md"
+        "impl-plans/active/subscription-usage-types.md",
+        "tmp/subscription-usage-build/subscription-usage-types"
       ],
       "sharedPaths": [],
-      "artifactRoots": [],
+      "artifactRoots": [
+        "tmp/subscription-usage-build/subscription-usage-types"
+      ],
       "acceptanceCriteria": [
         "Public GatewaySubscriptionUsageParams, GatewaySubscriptionUsageWindowKind (classify 300->fiveHour, 10080->weekly, else/nil->other), GatewaySubscriptionUsageWindow and GatewaySubscriptionUsageResult match the plan Contract exactly.",
         "Window resetsAt encodes as an ISO 8601 UTC whole-second string ending in Z, nil optional fields are omitted, any fraction length decodes, and an unparsable resetsAt throws DecodingError.",
         "package func parseGatewayISO8601Date exists and truncates fractions to 3 digits.",
         "All subscriptionUsageTypes* tests pass, swift build exits 0, swiftlint reports 0 violations in owned files, and the source file is under 1000 lines.",
-        "Only the owned files changed."
+        "Only the owned files changed.",
+        "All per-plan SwiftPM and swiftlint output and verification logs are under tmp/subscription-usage-build/subscription-usage-types (--scratch-path, --cache-path, logs/). This plan builds nothing into the default .build."
       ],
       "verification": [
-        "swift build 2>&1 | tee /tmp/sub-usage-types-build.log; echo exit=$?",
-        "swift test --filter subscriptionUsageTypes 2>&1 | tee /tmp/sub-usage-types-test.log",
-        "swiftlint lint Sources/AgentGateway/GatewaySubscriptionUsage.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift",
+        "mkdir -p tmp/subscription-usage-build/subscription-usage-types/logs",
+        "swift build --scratch-path tmp/subscription-usage-build/subscription-usage-types > tmp/subscription-usage-build/subscription-usage-types/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/subscription-usage-build/subscription-usage-types --filter subscriptionUsageTypes > tmp/subscription-usage-build/subscription-usage-types/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/subscription-usage-build/subscription-usage-types/swiftlint-cache Sources/AgentGateway/GatewaySubscriptionUsage.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift; echo exit=$?",
         "wc -l Sources/AgentGateway/GatewaySubscriptionUsage.swift",
         "grep -n \"package func parseGatewayISO8601Date\" Sources/AgentGateway/GatewaySubscriptionUsage.swift",
-        "git diff --name-only"
+        "git status --porcelain --untracked-files=all"
       ]
     },
     {
@@ -126,24 +133,30 @@
       "writePaths": [
         "Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift",
         "Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift",
-        "impl-plans/active/subscription-usage-exchange.md"
+        "impl-plans/active/subscription-usage-exchange.md",
+        "tmp/subscription-usage-build/subscription-usage-exchange"
       ],
       "sharedPaths": [],
-      "artifactRoots": [],
+      "artifactRoots": [
+        "tmp/subscription-usage-build/subscription-usage-exchange"
+      ],
       "acceptanceCriteria": [
         "Internal GatewayJSONLineExchangeError {launchFailed(String), exitedWithoutAnswer(stderrTail:), timedOut(seconds:)} and exchangeGatewayJSONLines(executable:arguments:environment:requests:timeoutSeconds:isResponse:) match the plan Contract exactly.",
         "Stdin stays open until cleanup. Requests are written with gwp_write, with EINTR and partial-write handling. There are no FileHandle.write, transport.send or signal( calls.",
         "Stdout EOF without a match gives exitedWithoutAnswer with a trimmed 2 KiB stderr tail. Timeout gives timedOut. Cleanup on every path is SIGTERM, then 2 s, then SIGKILL, then waitUntilExit and transport.close.",
         "Process use is guarded by #if os(macOS) || os(Linux). Otherwise it throws GatewayProcessError.launchFailed(ENOTSUP).",
-        "The 5 jsonLineExchange* tests pass in under 30 s, build and lint are clean, and no orphaned fake children remain."
+        "The 5 jsonLineExchange* tests pass in under 30 s, build and lint are clean, and no orphaned fake children remain (fake scripts live in temp dirs prefixed agent-gateway-jsonline-test-).",
+        "All per-plan SwiftPM and swiftlint output and verification logs are under tmp/subscription-usage-build/subscription-usage-exchange (--scratch-path, --cache-path, logs/). This plan builds nothing into the default .build."
       ],
       "verification": [
-        "swift build 2>&1 | tee /tmp/sub-usage-exchange-build.log; echo exit=$?",
-        "swift test --filter jsonLineExchange 2>&1 | tee /tmp/sub-usage-exchange-test.log",
-        "swiftlint lint Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift",
+        "mkdir -p tmp/subscription-usage-build/subscription-usage-exchange/logs",
+        "swift build --scratch-path tmp/subscription-usage-build/subscription-usage-exchange > tmp/subscription-usage-build/subscription-usage-exchange/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/subscription-usage-build/subscription-usage-exchange --filter jsonLineExchange > tmp/subscription-usage-build/subscription-usage-exchange/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/subscription-usage-build/subscription-usage-exchange/swiftlint-cache Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift; echo exit=$?",
         "grep -n \"Process()\" Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift",
-        "ps -A -o command | grep -c \"[w]hile IFS\"",
-        "git diff --name-only"
+        "grep -n \"FileHandle.write\\|\\.send(line\\|signal(\" Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift",
+        "ps -A -o command | grep -c \"[a]gent-gateway-jsonline-test-\"",
+        "git status --porcelain --untracked-files=all"
       ]
     },
     {
@@ -152,20 +165,27 @@
       "dependsOn": [],
       "writePaths": [
         "README.md",
-        "impl-plans/active/subscription-usage-readme.md"
+        "impl-plans/active/subscription-usage-readme.md",
+        "tmp/subscription-usage-build/subscription-usage-readme"
       ],
       "sharedPaths": [],
-      "artifactRoots": [],
+      "artifactRoots": [
+        "tmp/subscription-usage-build/subscription-usage-readme"
+      ],
       "acceptanceCriteria": [
         "README.md has exactly one '## Subscription usage' section, inserted immediately before '## Audio transcription', with plan items 1-7: purpose, bash examples, sample output, field notes, credential boundary, swift library snippet and errors (-32040/-32041).",
         "The README does not mention -32030/-32031 for this feature, does not offer the ccusage-gauge Keychain/HTTP approach, and contains no emojis.",
-        "Only insertions in README.md. No other file changed. design-docs/specs/command.md is not edited."
+        "Only insertions in README.md (git diff --numstat deleted column is 0). No other file changed. design-docs/specs/command.md is not edited.",
+        "Verification evidence (readme.diff) is saved under tmp/subscription-usage-build/subscription-usage-readme/logs. This plan runs no Swift build."
       ],
       "verification": [
-        "grep -n \"^## Subscription usage\" README.md",
+        "mkdir -p tmp/subscription-usage-build/subscription-usage-readme/logs",
+        "grep -n \"^## Subscription usage\\|^## Audio transcription\" README.md",
         "grep -c -- \"-32040\\|-32041\\|subscriptionUsage(\\|account/rateLimits/read\\|get_usage\" README.md",
         "grep -n -- \"-3203[01]\" README.md",
-        "git diff --stat README.md"
+        "git diff --numstat README.md",
+        "git diff README.md > tmp/subscription-usage-build/subscription-usage-readme/logs/readme.diff; echo exit=$?",
+        "git status --porcelain --untracked-files=all"
       ]
     },
     {
@@ -180,7 +200,8 @@
         "Sources/AgentGatewayAppCore/GatewayExecution.swift",
         "Sources/AgentGatewayAppCore/Command.swift",
         "Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift",
-        "impl-plans/active/subscription-usage-reader-cli.md"
+        "impl-plans/active/subscription-usage-reader-cli.md",
+        "tmp/subscription-usage-build/subscription-usage-reader-cli"
       ],
       "sharedPaths": [],
       "sharedPathNotes": [
@@ -193,24 +214,29 @@
           "intendedEdit": "Add \"subscription-usage\" to the dispatch list (line 26), add a runStreaming case modelled on case \"models\", add subscriptionUsageParams next to modelCatalogParams, and add the usage synopsis line and credential-boundary paragraph. No unrelated reformatting."
         }
       ],
-      "artifactRoots": [],
+      "artifactRoots": [
+        "tmp/subscription-usage-build/subscription-usage-reader-cli"
+      ],
       "acceptanceCriteria": [
         "public protocol GatewaySubscriptionUsageReading, public let gatewaySubscriptionUsageUnsupportedCode = -32040, public let gatewaySubscriptionUsageFailureCode = -32041, and extension ProductionGatewayExecutor: GatewaySubscriptionUsageReading exist.",
         "The validation order is protocolVersion (-32602), vendor via exhaustive switch (-32040), timeoutSeconds (-32602), executable resolution (-32041), then exchange. Exchange errors map to -32041 messages that name the executable.",
         "Claude and Codex arguments, requests, matchers and parsers match the plan exactly (model_scoped with opus/sonnet fallback, rateLimitsByLimitId ordering and scope, NSNumber casts, unix-seconds resetsAt).",
         "GatewayExecution.swift diff is only the two private removals. Command.swift adds the subscription-usage command, params builder and usage text. No -32030/-32031 in the reader.",
         "All subscriptionUsage* tests pass (including wave-1 subscriptionUsageTypes*), and build and lint are clean on owned files.",
-        "`swift run agent-gateway subscription-usage --vendor openai` exits 1 with 'subscription usage failed (-32040)'. Live codex and claude-code smokes print one JSON line and exit 0, or are recorded as gaps if sandbox-blocked."
+        "`swift run agent-gateway subscription-usage --vendor openai` exits 1 with 'subscription usage failed (-32040)'. Live codex and claude-code smokes print one JSON line and exit 0, or are recorded as gaps if sandbox-blocked.",
+        "All per-plan SwiftPM and swiftlint output, smoke outputs and verification logs are under tmp/subscription-usage-build/subscription-usage-reader-cli (--scratch-path, --cache-path, logs/). This plan builds nothing into the default .build."
       ],
       "verification": [
-        "swift build 2>&1 | tee /tmp/sub-usage-reader-build.log; echo exit=$?",
-        "swift test --filter subscriptionUsage 2>&1 | tee /tmp/sub-usage-reader-test.log",
-        "swiftlint lint Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayExecution.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift",
+        "mkdir -p tmp/subscription-usage-build/subscription-usage-reader-cli/logs",
+        "swift build --scratch-path tmp/subscription-usage-build/subscription-usage-reader-cli > tmp/subscription-usage-build/subscription-usage-reader-cli/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/subscription-usage-build/subscription-usage-reader-cli --filter subscriptionUsage > tmp/subscription-usage-build/subscription-usage-reader-cli/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/subscription-usage-build/subscription-usage-reader-cli/swiftlint-cache Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayExecution.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift; echo exit=$?",
         "git diff -U0 Sources/AgentGatewayAppCore/GatewayExecution.swift",
         "grep -rn -- \"-3203[01]\" Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift",
-        "swift run agent-gateway subscription-usage --vendor openai; echo exit=$?",
-        "swift run agent-gateway subscription-usage --vendor codex; echo exit=$?",
-        "swift run agent-gateway subscription-usage --vendor claude-code; echo exit=$?"
+        "swift run --scratch-path tmp/subscription-usage-build/subscription-usage-reader-cli --skip-build agent-gateway subscription-usage --vendor openai > tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-openai.out 2> tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-openai.err; echo exit=$?",
+        "swift run --scratch-path tmp/subscription-usage-build/subscription-usage-reader-cli --skip-build agent-gateway subscription-usage --vendor codex > tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-codex.out 2> tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-codex.err; echo exit=$?",
+        "swift run --scratch-path tmp/subscription-usage-build/subscription-usage-reader-cli --skip-build agent-gateway subscription-usage --vendor claude-code > tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-claude.out 2> tmp/subscription-usage-build/subscription-usage-reader-cli/logs/smoke-claude.err; echo exit=$?",
+        "git status --porcelain --untracked-files=all"
       ]
     }
   ],

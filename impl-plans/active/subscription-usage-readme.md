@@ -25,6 +25,14 @@ Do not edit it.
 
 - `README.md`
 - `impl-plans/active/subscription-usage-readme.md` (this plan's progress log only)
+- `tmp/subscription-usage-build/subscription-usage-readme` (artifact root for
+  verification output only; gitignored, never committed). This plan runs no
+  Swift build.
+
+Edit discipline: re-read `README.md` right before every edit. Record
+`shasum -a 256 README.md` in the progress log before the first edit and after
+the last one. If it changes between your own edits (drift), stop and record
+it; do not overwrite it.
 
 ## Changes
 
@@ -76,14 +84,19 @@ section contains:
 
 ## Verification (repository root, foreground)
 
+Run `mkdir -p tmp/subscription-usage-build/subscription-usage-readme/logs`
+first.
+
 | Command | Must show |
 | --- | --- |
-| `grep -n "^## Subscription usage" README.md` | exactly one match, on a line before `## Audio transcription` |
+| `grep -n "^## Subscription usage\|^## Audio transcription" README.md` | exactly one `## Subscription usage` line, with a line number lower than `## Audio transcription` |
 | `grep -c -- "-32040\|-32041\|subscriptionUsage(\|account/rateLimits/read\|get_usage" README.md` | at least 5 |
 | `grep -n -- "-3203[01]" README.md` | no output (exit status 1) |
-| `git diff --stat README.md` | only insertions, no deletions in other sections |
+| `git diff --numstat README.md` | the deleted-lines column is `0` |
+| `git diff README.md > tmp/subscription-usage-build/subscription-usage-readme/logs/readme.diff; echo exit=$?` | exit=0; the diff is saved as evidence |
+| `git status --porcelain --untracked-files=all` | only `README.md` and this plan file changed (`tmp/` is ignored) |
 
-Record the commands and outputs in the progress log.
+Record the commands, outputs and the evidence path in the progress log.
 
 ## Done Criteria
 
@@ -93,3 +106,7 @@ Record the commands and outputs in the progress log.
 ## Progress Log
 
 - 2026-10-31: Plan created.
+- 2026-11-01: Amended (session-593). Added the plan-unique artifact root
+  `tmp/subscription-usage-build/subscription-usage-readme` for verification
+  evidence, and added the edit discipline. Deletions are checked with
+  `git diff --numstat`.

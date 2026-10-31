@@ -30,6 +30,13 @@ Other plans compile against them.
 - `Sources/AgentGateway/GatewaySubscriptionUsage.swift` (new)
 - `Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift` (new)
 - `impl-plans/active/subscription-usage-types.md` (this plan's progress log only)
+- `tmp/subscription-usage-build/subscription-usage-types` (generated-output
+  root and artifact root: SwiftPM scratch directory, swiftlint cache and
+  verification logs; gitignored, never committed)
+
+All SwiftPM output for this plan goes to that root (`--scratch-path`). Never
+build into the default `.build`, because sibling wave-1 plans build at the
+same time.
 
 Do not touch any other file. In particular, do not touch `GatewayProtocol.swift`,
 `Package.swift`, or files owned by sibling plans
@@ -96,6 +103,11 @@ in `AgentGatewayAppCore` (same package) reuses it, so do not widen the public AP
   The error constants belong to the wave-2 reader plan.
 - Parallel siblings edit the same working tree. If `swift build` fails in a
   file you do not own, wait and retry; never edit it.
+- Edit discipline: re-read each owned file right before every edit. Record
+  `shasum -a 256 <owned files>` in the progress log before the first edit and
+  after the last one. If an owned file's content changes between your own
+  edits (drift), stop and record it in the progress log; do not overwrite it.
+  Cross-plan repair happens serially after the wave joins.
 
 ## Tests (`GatewaySubscriptionUsageTypesTests.swift`, `@testable import AgentGateway`)
 
@@ -120,22 +132,35 @@ below selects them.
 
 ## Verification (run from the repository root, foreground)
 
+`R` below means `tmp/subscription-usage-build/subscription-usage-types`. Run
+`mkdir -p tmp/subscription-usage-build/subscription-usage-types/logs` first.
+Redirect to a file instead of piping through `tee`, so `echo exit=$?` reports
+the Swift exit status and not the exit status of `tee`.
+
 | Command | Must show |
 | --- | --- |
-| `swift build 2>&1 \| tee /tmp/sub-usage-types-build.log; echo exit=$?` | exit=0 (compiles on the host) |
-| `swift test --filter subscriptionUsageTypes 2>&1 \| tee /tmp/sub-usage-types-test.log` | all the new tests pass, 0 failures |
-| `swiftlint lint Sources/AgentGateway/GatewaySubscriptionUsage.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift` | 0 violations in the owned files |
+| `swift build --scratch-path tmp/subscription-usage-build/subscription-usage-types > tmp/subscription-usage-build/subscription-usage-types/logs/build.log 2>&1; echo exit=$?` | exit=0 (compiles on the host) |
+| `swift test --scratch-path tmp/subscription-usage-build/subscription-usage-types --filter subscriptionUsageTypes > tmp/subscription-usage-build/subscription-usage-types/logs/test.log 2>&1; echo exit=$?` | exit=0; the log lists every new `subscriptionUsageTypes*` test as passed, with 0 failures |
+| `swiftlint lint --cache-path tmp/subscription-usage-build/subscription-usage-types/swiftlint-cache Sources/AgentGateway/GatewaySubscriptionUsage.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift; echo exit=$?` | 0 violations in the owned files, exit=0 |
 | `wc -l Sources/AgentGateway/GatewaySubscriptionUsage.swift` | under 1000 |
+| `git status --porcelain --untracked-files=all` | this plan adds or changes only its owned files (`tmp/` is ignored) |
 
-Record the commands, exit statuses and log paths in the progress log.
+Record the commands, exit statuses and full log paths under `R/logs/` in the
+progress log. A truncated log, or a run that is still going, does not count
+as a pass.
 
 ## Done Criteria
 
 - [ ] Both owned files exist, and the public symbols match the Contract section exactly.
 - [ ] `grep -n "package func parseGatewayISO8601Date" Sources/AgentGateway/GatewaySubscriptionUsage.swift` matches.
 - [ ] All `subscriptionUsageTypes*` tests pass, and the build and lint checks above are clean.
-- [ ] `git diff --name-only` shows no file outside Write Ownership changed by this plan.
+- [ ] `git status --porcelain --untracked-files=all` shows no file outside Write Ownership changed by this plan.
+- [ ] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-types`.
 
 ## Progress Log
 
 - 2026-10-31: Plan created.
+- 2026-11-01: Amended (session-593). Added the plan-unique artifact root
+  `tmp/subscription-usage-build/subscription-usage-types`. Verification now
+  uses `--scratch-path` and `--cache-path`, with logs under the root and no
+  `tee`.
