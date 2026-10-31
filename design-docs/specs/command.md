@@ -12,8 +12,21 @@ agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options]
 agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
 agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
 agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
+agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <path>]
 agent-gateway [--help] [--version]
 ```
+
+`subscription-usage` prints one JSON object (`vendor`, `planType`,
+`available`, `windows[{kind, scope, windowMinutes, usedPercent, resetsAt}]`)
+with the signed-in account's subscription rate-limit windows. On success,
+including `available: false`, it exits 0. On a vendor failure or an
+unsupported vendor (code `-32040`) it prints an error on stderr and exits 1.
+The gateway asks the vendor CLI over that CLI's own stdio protocol and never
+reads credential files or the Keychain, and never calls vendor HTTP
+endpoints. The library API is
+`ProductionGatewayExecutor.subscriptionUsage(_:)`
+(`GatewaySubscriptionUsageReading`). See
+[design-subscription-usage.md](design-subscription-usage.md).
 
 `server` serves the ACP agent side over stdio. `client` is an ACP client that
 spawns the server (or any external ACP agent via `--agent`) and echoes the raw

@@ -1,0 +1,222 @@
+{
+  "taskId": "subscription-usage-20261031",
+  "workflowMode": "issue-resolution",
+  "implementationBranch": "feat/subscription-usage",
+  "baseBranch": "main",
+  "remote": "origin",
+  "originalHead": "64361c28bfaf1dcea1b28ccf99329796053454ab",
+  "designDocPaths": [
+    "design-docs/specs/design-subscription-usage.md",
+    "design-docs/specs/command.md"
+  ],
+  "evidenceRoot": "tmp/subscription-usage-20261031",
+  "reviewContext": {
+    "issueReference": "none (no GitHub issue supplied; scope from workflowInput requestedOutcome/targetScope on branch feat/subscription-usage)",
+    "userProblem": "agent-gateway cannot report the signed-in account's subscription rate-limit usage (Claude Pro/Max 5-hour and weekly windows, ChatGPT/Codex plan windows). ccusage-gauge shows this data but reads CLI OAuth tokens from the Keychain or credential files and calls private vendor HTTP endpoints, which is out of bounds here.",
+    "requiredOutcomes": [
+      "Public AgentGateway types GatewaySubscriptionUsageParams, GatewaySubscriptionUsageResult, GatewaySubscriptionUsageWindow and GatewaySubscriptionUsageWindowKind (fiveHour|weekly|other) with resetsAt encoded as an ISO 8601 UTC whole-second string.",
+      "AgentGatewayAppCore protocol GatewaySubscriptionUsageReading and extension ProductionGatewayExecutor.subscriptionUsage(_:) mirroring GatewayModelListing, with public codes gatewaySubscriptionUsageUnsupportedCode = -32040 and gatewaySubscriptionUsageFailureCode = -32041 thrown as GatewayRPCError.",
+      "An interactive JSON-line exchange helper (Process plus 3 Pipes, stdin kept open, gwp_write, 2 KiB stderr tail, SIGTERM then SIGKILL cleanup, timeout) that works with codex app-server, which exits on stdin EOF.",
+      "CLI command `agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <path>]` that prints one JSON line and exits 0, or prints `subscription usage failed (<code>): <message>` to stderr and exits 1.",
+      "README.md, design-docs/specs/command.md and the CLI usage text document the command, the library API and the credential boundary.",
+      "Unit tests cover both vendor parsers, unsupported-vendor rejection, the window JSON round-trip and the exchange with fake shell executables. No real CLI or network is needed."
+    ],
+    "nonGoals": [
+      "Reading CLI credential files (~/.claude/.credentials.json, ~/.codex/auth.json) or the macOS Keychain.",
+      "Calling vendor HTTP endpoints (api.anthropic.com/api/oauth/usage, chatgpt.com/backend-api/wham/usage) directly.",
+      "Support for cursor, cursor-api or any direct API vendor.",
+      "Vendor auto-detection.",
+      "A CLI timeout flag (timeoutSeconds is library-only).",
+      "Bumping VERSION or doing any release work.",
+      "Pushing, opening a PR or merging (gitPush=false)."
+    ],
+    "constraints": [
+      "Only spawn the vendor CLI and talk to it over its own stdio protocol.",
+      "Claude Code: claude -p --input-format stream-json --output-format stream-json --verbose --strict-mcp-config --no-session-persistence --settings {\"disableAllHooks\":true}, sending one get_usage control_request with no prompt and no initialize.",
+      "Codex: codex app-server with initialize, initialized, then id 2 account/rateLimits/read, with no jsonrpc field. Stdin must stay open until the answer arrives.",
+      "Resolve executables with the existing defaultGatewayExecutable/resolveGatewayExecutable in GatewayExecution.swift, made internal, not duplicated. Pass the executor environment to the child.",
+      "Guard Process use with #if os(macOS) || os(Linux). Otherwise throw GatewayProcessError.launchFailed(ENOTSUP), so iOS 17 builds still compile.",
+      "Codes -32040/-32041 only. -32030/-32031 are already used by decide.",
+      "Swift files under 1000 lines, swiftlint clean, no emojis, no unrelated file edits."
+    ],
+    "designDecisionsAndRationale": [
+      "Use a new exchange helper instead of POSIXGatewayProcessRunner, because that runner closes stdin after writing and codex app-server exits on stdin EOF before it answers.",
+      "Write requests with gwp_write instead of FileHandle.write or transport.send. A dead reader would otherwise raise SIGPIPE or an uncatchable exception in the host, and with gwp_write EPIPE maps to the exited-without-answer path.",
+      "Treat stdout EOF, not terminationHandler, as the exit signal, so a response printed just before the child exits is still returned.",
+      "GatewayJSONLineExchangeError keeps the exchange independent of subscription-usage codes. The reader maps launchFailed, exitedWithoutAnswer and timedOut to -32041 messages that name the executable.",
+      "parseGatewayISO8601Date has package access and truncates fractions to 3 digits, because ISO8601DateFormatter rejects Claude's 6-digit fractions. This avoids widening the public API.",
+      "Claude model_scoped entries become weekly windows with the display name as scope. When model_scoped is absent, the legacy seven_day_opus/seven_day_sonnet keys are the fallback.",
+      "Codex rateLimitsByLimitId ordering puts the codex bucket first as plan-wide (scope nil) and sorts the other keys with scope limitName ?? limitId. When that map is absent, rateLimits is the fallback.",
+      "The validation order is fixed: protocol version, vendor, timeout, executable resolution, then exchange. No process is spawned before resolution."
+    ],
+    "intentionalTradeoffs": [
+      "A Codex initialize failure waits until the timeout (default 60 s) instead of failing early.",
+      "The vendor stdio protocols are undocumented (verified against claude 2.1.312 and codex-cli 0.166.0). The parsers tolerate missing and extra keys, and a shape change shows up as -32041 or as missing windows.",
+      "Wave-1 plans share one working tree, so implementers wait and retry on transient sibling compile failures instead of cross-editing.",
+      "The live claude-code and codex smokes depend on sandbox CLI and network access. If they are blocked, they are recorded as gaps, not passes."
+    ],
+    "supportedEdgeCases": [
+      "Claude resets_at with 6 fractional digits.",
+      "Claude rate_limits_available=false gives available=false and windows=[] with exit 0.",
+      "Claude error subtype gives -32041 with the vendor message.",
+      "Unrelated stdout lines (hook events, notifications, non-JSON) before the response are skipped.",
+      "Codex null primary or secondary windows and null buckets are skipped.",
+      "Codex JSON-RPC error gives -32041 with the vendor message.",
+      "A child exits without answering: -32041 with the stderr tail.",
+      "A child never answers: -32041 timeout, and the child is killed.",
+      "A missing executable gives -32041 executable unavailable.",
+      "An invalid protocolVersion or non-positive/non-finite timeoutSeconds gives -32602.",
+      "Unsupported vendors give -32040 before any executable resolution."
+    ],
+    "outOfScopeEdgeCases": [
+      "Vendor protocol versions other than those verified (claude 2.1.312, codex-cli 0.166.0) beyond tolerant parsing.",
+      "Platforms other than macOS and Linux at runtime (they throw ENOTSUP).",
+      "Live verification when the sandbox blocks the CLIs or the network (recorded as a gap)."
+    ],
+    "sourcePaths": [
+      "design-docs/specs/design-subscription-usage.md",
+      "design-docs/specs/command.md",
+      "impl-plans/active/subscription-usage-types.md",
+      "impl-plans/active/subscription-usage-exchange.md",
+      "impl-plans/active/subscription-usage-readme.md",
+      "impl-plans/active/subscription-usage-reader-cli.md",
+      "Sources/AgentGateway/GatewayProtocol.swift",
+      "Sources/AgentGatewayAppCore/GatewayModelCatalog.swift",
+      "Sources/AgentGatewayAppCore/GatewayExecution.swift",
+      "Sources/AgentGatewayAppCore/GatewayACPClientRunner.swift",
+      "Sources/AgentGatewayAppCore/Command.swift",
+      "Sources/ACP/ACPTransport.swift",
+      "Sources/GatewayProcessNative/include/GatewayProcessNative.h",
+      "README.md"
+    ]
+  },
+  "acceptedDependencies": [],
+  "plans": [
+    {
+      "planId": "subscription-usage-types",
+      "planPath": "impl-plans/active/subscription-usage-types.md",
+      "dependsOn": [],
+      "writePaths": [
+        "Sources/AgentGateway/GatewaySubscriptionUsage.swift",
+        "Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift",
+        "impl-plans/active/subscription-usage-types.md"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "Public GatewaySubscriptionUsageParams, GatewaySubscriptionUsageWindowKind (classify 300->fiveHour, 10080->weekly, else/nil->other), GatewaySubscriptionUsageWindow and GatewaySubscriptionUsageResult match the plan Contract exactly.",
+        "Window resetsAt encodes as an ISO 8601 UTC whole-second string ending in Z, nil optional fields are omitted, any fraction length decodes, and an unparsable resetsAt throws DecodingError.",
+        "package func parseGatewayISO8601Date exists and truncates fractions to 3 digits.",
+        "All subscriptionUsageTypes* tests pass, swift build exits 0, swiftlint reports 0 violations in owned files, and the source file is under 1000 lines.",
+        "Only the owned files changed."
+      ],
+      "verification": [
+        "swift build 2>&1 | tee /tmp/sub-usage-types-build.log; echo exit=$?",
+        "swift test --filter subscriptionUsageTypes 2>&1 | tee /tmp/sub-usage-types-test.log",
+        "swiftlint lint Sources/AgentGateway/GatewaySubscriptionUsage.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift",
+        "wc -l Sources/AgentGateway/GatewaySubscriptionUsage.swift",
+        "grep -n \"package func parseGatewayISO8601Date\" Sources/AgentGateway/GatewaySubscriptionUsage.swift",
+        "git diff --name-only"
+      ]
+    },
+    {
+      "planId": "subscription-usage-exchange",
+      "planPath": "impl-plans/active/subscription-usage-exchange.md",
+      "dependsOn": [],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift",
+        "Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift",
+        "impl-plans/active/subscription-usage-exchange.md"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "Internal GatewayJSONLineExchangeError {launchFailed(String), exitedWithoutAnswer(stderrTail:), timedOut(seconds:)} and exchangeGatewayJSONLines(executable:arguments:environment:requests:timeoutSeconds:isResponse:) match the plan Contract exactly.",
+        "Stdin stays open until cleanup. Requests are written with gwp_write, with EINTR and partial-write handling. There are no FileHandle.write, transport.send or signal( calls.",
+        "Stdout EOF without a match gives exitedWithoutAnswer with a trimmed 2 KiB stderr tail. Timeout gives timedOut. Cleanup on every path is SIGTERM, then 2 s, then SIGKILL, then waitUntilExit and transport.close.",
+        "Process use is guarded by #if os(macOS) || os(Linux). Otherwise it throws GatewayProcessError.launchFailed(ENOTSUP).",
+        "The 5 jsonLineExchange* tests pass in under 30 s, build and lint are clean, and no orphaned fake children remain."
+      ],
+      "verification": [
+        "swift build 2>&1 | tee /tmp/sub-usage-exchange-build.log; echo exit=$?",
+        "swift test --filter jsonLineExchange 2>&1 | tee /tmp/sub-usage-exchange-test.log",
+        "swiftlint lint Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift Tests/AgentGatewayTests/GatewayJSONLineExchangeTests.swift",
+        "grep -n \"Process()\" Sources/AgentGatewayAppCore/GatewayJSONLineExchange.swift",
+        "ps -A -o command | grep -c \"[w]hile IFS\"",
+        "git diff --name-only"
+      ]
+    },
+    {
+      "planId": "subscription-usage-readme",
+      "planPath": "impl-plans/active/subscription-usage-readme.md",
+      "dependsOn": [],
+      "writePaths": [
+        "README.md",
+        "impl-plans/active/subscription-usage-readme.md"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "README.md has exactly one '## Subscription usage' section, inserted immediately before '## Audio transcription', with plan items 1-7: purpose, bash examples, sample output, field notes, credential boundary, swift library snippet and errors (-32040/-32041).",
+        "The README does not mention -32030/-32031 for this feature, does not offer the ccusage-gauge Keychain/HTTP approach, and contains no emojis.",
+        "Only insertions in README.md. No other file changed. design-docs/specs/command.md is not edited."
+      ],
+      "verification": [
+        "grep -n \"^## Subscription usage\" README.md",
+        "grep -c -- \"-32040\\|-32041\\|subscriptionUsage(\\|account/rateLimits/read\\|get_usage\" README.md",
+        "grep -n -- \"-3203[01]\" README.md",
+        "git diff --stat README.md"
+      ]
+    },
+    {
+      "planId": "subscription-usage-reader-cli",
+      "planPath": "impl-plans/active/subscription-usage-reader-cli.md",
+      "dependsOn": [
+        "subscription-usage-types",
+        "subscription-usage-exchange"
+      ],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift",
+        "Sources/AgentGatewayAppCore/GatewayExecution.swift",
+        "Sources/AgentGatewayAppCore/Command.swift",
+        "Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift",
+        "impl-plans/active/subscription-usage-reader-cli.md"
+      ],
+      "sharedPaths": [],
+      "sharedPathNotes": [
+        {
+          "path": "Sources/AgentGatewayAppCore/GatewayExecution.swift",
+          "intendedEdit": "Only remove `private` from defaultGatewayExecutable (line 308) and resolveGatewayExecutable (line 317), making them internal. No other change."
+        },
+        {
+          "path": "Sources/AgentGatewayAppCore/Command.swift",
+          "intendedEdit": "Add \"subscription-usage\" to the dispatch list (line 26), add a runStreaming case modelled on case \"models\", add subscriptionUsageParams next to modelCatalogParams, and add the usage synopsis line and credential-boundary paragraph. No unrelated reformatting."
+        }
+      ],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "public protocol GatewaySubscriptionUsageReading, public let gatewaySubscriptionUsageUnsupportedCode = -32040, public let gatewaySubscriptionUsageFailureCode = -32041, and extension ProductionGatewayExecutor: GatewaySubscriptionUsageReading exist.",
+        "The validation order is protocolVersion (-32602), vendor via exhaustive switch (-32040), timeoutSeconds (-32602), executable resolution (-32041), then exchange. Exchange errors map to -32041 messages that name the executable.",
+        "Claude and Codex arguments, requests, matchers and parsers match the plan exactly (model_scoped with opus/sonnet fallback, rateLimitsByLimitId ordering and scope, NSNumber casts, unix-seconds resetsAt).",
+        "GatewayExecution.swift diff is only the two private removals. Command.swift adds the subscription-usage command, params builder and usage text. No -32030/-32031 in the reader.",
+        "All subscriptionUsage* tests pass (including wave-1 subscriptionUsageTypes*), and build and lint are clean on owned files.",
+        "`swift run agent-gateway subscription-usage --vendor openai` exits 1 with 'subscription usage failed (-32040)'. Live codex and claude-code smokes print one JSON line and exit 0, or are recorded as gaps if sandbox-blocked."
+      ],
+      "verification": [
+        "swift build 2>&1 | tee /tmp/sub-usage-reader-build.log; echo exit=$?",
+        "swift test --filter subscriptionUsage 2>&1 | tee /tmp/sub-usage-reader-test.log",
+        "swiftlint lint Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayExecution.swift Tests/AgentGatewayTests/GatewaySubscriptionUsageTests.swift",
+        "git diff -U0 Sources/AgentGatewayAppCore/GatewayExecution.swift",
+        "grep -rn -- \"-3203[01]\" Sources/AgentGatewayAppCore/GatewaySubscriptionUsageReader.swift",
+        "swift run agent-gateway subscription-usage --vendor openai; echo exit=$?",
+        "swift run agent-gateway subscription-usage --vendor codex; echo exit=$?",
+        "swift run agent-gateway subscription-usage --vendor claude-code; echo exit=$?"
+      ]
+    }
+  ],
+  "integrationVerification": [
+    "mise run build",
+    "mise run test",
+    "mise run lint"
+  ]
+}
