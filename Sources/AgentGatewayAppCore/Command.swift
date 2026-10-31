@@ -23,7 +23,7 @@ public struct AppCommand: Sendable {
       return usage
     }
 
-    if ["server", "client", "readiness", "models", "decide"].contains(arguments.first) {
+    if ["server", "client", "readiness", "models", "decide", "subscription-usage"].contains(arguments.first) {
       return ""
     }
 
@@ -73,6 +73,15 @@ public struct AppCommand: Sendable {
         )
         return 1
       }
+    case "subscription-usage":
+      let params = try subscriptionUsageParams(Array(arguments.dropFirst()))
+      do {
+        try writeJSONLine(try await ProductionGatewayExecutor().subscriptionUsage(params))
+        return 0
+      } catch let error as GatewayRPCError {
+        FileHandle.standardError.write(Data("subscription usage failed (\(error.code)): \(error.message)\n".utf8))
+        return 1
+      }
     default:
       return 0
     }
@@ -93,6 +102,7 @@ public struct AppCommand: Sendable {
       agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
+      agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <path>]
       agent-gateway decide --request <json-file|-> [--api-key-environment <name>] [--base-url <url>]
       agent-gateway --help
 
@@ -119,6 +129,9 @@ public struct AppCommand: Sendable {
     stale cache, then the fallback table the same way; `offline` uses only
     the caches; `off` skips pricing. Models without pricing are still
     listed, and pricing failures never fail the command.
+    `subscription-usage` prints the signed-in account's subscription rate-limit
+    windows as JSON by asking the vendor CLI itself over its stdio protocol.
+    It never reads credential files or the Keychain and makes no HTTP calls.
     `decide` evaluates typed Jev questions through OpenRouter Decisions and
     prints one JSON result, including probabilities, confidence, and usage.
     The request JSON supplies model, state, and questions (choice/score/noul).
@@ -126,6 +139,14 @@ public struct AppCommand: Sendable {
     For Codex or Claude Code, --base-url selects the custom provider and
     defaults --model to custom; --provider-name can select a named provider.
     """
+  }
+
+  func subscriptionUsageParams(_ arguments: [String]) throws -> GatewaySubscriptionUsageParams {
+    let (options, _) = try parseOptions(arguments)
+    guard let value = options.vendor, let vendor = GatewayVendor(rawValue: value) else {
+      throw Error.missingValue("--vendor")
+    }
+    return GatewaySubscriptionUsageParams(vendor: vendor, executable: options.executable)
   }
 
   func modelCatalogParams(

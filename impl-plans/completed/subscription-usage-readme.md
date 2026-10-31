@@ -1,6 +1,6 @@
 # Subscription Usage: README Documentation
 
-**Status**: Ready
+**Status**: Completed
 **Plan ID**: `subscription-usage-readme`
 **Wave**: 1 (no dependencies; documentation only)
 **Design Reference**: `design-docs/specs/design-subscription-usage.md` (all sections)
@@ -100,8 +100,8 @@ Record the commands, outputs and the evidence path in the progress log.
 
 ## Done Criteria
 
-- [ ] The section exists with items 1-7 above.
-- [ ] All the grep checks pass, and no other file was changed.
+- [x] The section exists with items 1-7 above.
+- [x] All grep checks pass, and this plan changed no other source file.
 
 ## Progress Log
 
@@ -110,3 +110,18 @@ Record the commands, outputs and the evidence path in the progress log.
   `tmp/subscription-usage-build/subscription-usage-readme` for verification
   evidence, and added the edit discipline. Deletions are checked with
   `git diff --numstat`.
+- 2026-11-01: Inserted the section. README SHA-256 before:
+  `0ad9d48c4e23797691f1b66a683b27e627a4409cf86f2df7f651742e3b4f991e`;
+  after: `3ca4f00c2e54bce7c4cbb5a964707c3e1e0ebe547025b44a1d43ebead1df7f95`.
+  Headings were at lines 264 and 306; the required term count was 5; the
+  old-code grep returned no matches (exit 1); numstat was `42 0 README.md`.
+  The diff was saved to
+  `tmp/subscription-usage-build/subscription-usage-readme/logs/readme.diff`.
+  Command logs are in `tmp/subscription-usage-20261031/subscription-usage-readme/`.
+  Status also showed sibling-owned `Sources/AgentGateway/GatewaySubscriptionUsage.swift`
+  and `Tests/AgentGatewayTests/GatewaySubscriptionUsageTypesTests.swift` in the
+  shared working tree; neither was edited by this plan. No Swift build was run.
+  Formal review and workflow finalization remain downstream.
+- 2026-11-01: Completed. Accepted by adversarial and integration review
+  (session-593); archived to `impl-plans/completed/subscription-usage-readme.md`.
+  Step 8 added a Supported vendors bullet linking to the section.

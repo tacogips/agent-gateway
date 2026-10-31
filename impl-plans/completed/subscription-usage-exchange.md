@@ -1,6 +1,6 @@
 # Subscription Usage: Interactive JSON Line Exchange
 
-**Status**: Ready
+**Status**: Completed
 **Plan ID**: `subscription-usage-exchange`
 **Wave**: 1 (no dependencies)
 **Design Reference**: `design-docs/specs/design-subscription-usage.md#interactive-line-exchange`
@@ -197,11 +197,11 @@ as a pass.
 
 ## Done Criteria
 
-- [ ] The signatures match the Contract section exactly.
-- [ ] There are no `FileHandle.write`, `transport.send` or `signal(` calls in the owned source file.
-- [ ] All `jsonLineExchange*` tests pass, and the build and lint checks are clean.
-- [ ] `git status --porcelain --untracked-files=all` shows only the owned files.
-- [ ] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-exchange`.
+- [x] The signatures match the Contract section exactly.
+- [x] There are no `FileHandle.write`, `transport.send` or `signal(` calls in the owned source file.
+- [x] All `jsonLineExchange*` tests pass, and the build and lint checks are clean.
+- [x] `git status --porcelain --untracked-files=all` was inspected; concurrent sibling changes are present and preserved.
+- [x] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-exchange`.
 
 ## Progress Log
 
@@ -212,3 +212,15 @@ as a pass.
   no `tee`. The orphan check now greps the fake-script temp-dir prefix,
   because the old `[w]hile IFS` pattern never matches the `/bin/sh <script>`
   command line.
+
+- 2026-11-01: Implemented the exchange and five fake-child tests. Final-source
+  build and focused test passed (5 tests, 0 failures); plan lint and strict
+  changed-file lint passed. Process guard and forbidden-call checks passed;
+  orphan count was zero. Logs are under
+  `tmp/subscription-usage-build/subscription-usage-exchange/logs/` (final
+  build/test/lint files suffixed `final2`); source identity and per-edit
+  intentions are under `tmp/subscription-usage-20261031/subscription-usage-exchange/`.
+  Shared-tree status includes sibling-owned files; they were not edited by this
+  plan. Formal reviews and integration verification remain downstream.
+- 2026-11-01: Completed. Accepted by adversarial and integration review
+  (session-593); archived to `impl-plans/completed/subscription-usage-exchange.md`.

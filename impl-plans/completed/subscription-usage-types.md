@@ -1,6 +1,6 @@
 # Subscription Usage: Public Types
 
-**Status**: Ready
+**Status**: Completed
 **Plan ID**: `subscription-usage-types`
 **Wave**: 1 (no dependencies)
 **Design Reference**: `design-docs/specs/design-subscription-usage.md#public-api`
@@ -151,11 +151,11 @@ as a pass.
 
 ## Done Criteria
 
-- [ ] Both owned files exist, and the public symbols match the Contract section exactly.
-- [ ] `grep -n "package func parseGatewayISO8601Date" Sources/AgentGateway/GatewaySubscriptionUsage.swift` matches.
-- [ ] All `subscriptionUsageTypes*` tests pass, and the build and lint checks above are clean.
-- [ ] `git status --porcelain --untracked-files=all` shows no file outside Write Ownership changed by this plan.
-- [ ] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-types`.
+- [x] Both owned files exist, and the public symbols match the Contract section exactly.
+- [x] `grep -n "package func parseGatewayISO8601Date" Sources/AgentGateway/GatewaySubscriptionUsage.swift` matches.
+- [x] All `subscriptionUsageTypes*` tests pass, and the build and lint checks above are clean.
+- [x] `git status --porcelain --untracked-files=all` shows no file outside Write Ownership changed by this plan.
+- [x] No `.build` output was produced by this plan; all build output is under `tmp/subscription-usage-build/subscription-usage-types`.
 
 ## Progress Log
 
@@ -164,3 +164,22 @@ as a pass.
   `tmp/subscription-usage-build/subscription-usage-types`. Verification now
   uses `--scratch-path` and `--cache-path`, with logs under the root and no
   `tee`.
+
+- 2026-11-01: Implemented public types and date parsing with six focused tests.
+  Before edits: source and tests absent; plan SHA-256
+  `e1479870fb934f68d230c341ef5b4ab82256d37857ec1eb2d3513a9ccc8b91b2`.
+  Source SHA-256 `908f0c35df23e02ff0b6aa51e199328139335e187425e2978da642bed42a66f2`;
+  tests SHA-256 `3885c6bc013953e4c05fcd4860ffff65ac52d46a2f2319578b77b3ba3af47099`.
+  `swift build --scratch-path tmp/subscription-usage-build/subscription-usage-types`
+  exited 0 (`tmp/subscription-usage-build/subscription-usage-types/logs/build.log`);
+  `swift test --scratch-path tmp/subscription-usage-build/subscription-usage-types --filter subscriptionUsageTypes`
+  exited 0, six tests passed (`tmp/subscription-usage-build/subscription-usage-types/logs/test.log`).
+  Plan-scoped SwiftLint and strict changed-file SwiftLint exited 0 with zero violations
+  (`tmp/subscription-usage-build/subscription-usage-types/logs/lint.log` and
+  `tmp/subscription-usage-build/subscription-usage-types/logs/strict-lint.log`).
+  Source is 133 lines and package parser is present. Shared status also shows
+  sibling README and exchange changes; this plan did not edit them. Formal
+  review and integration are downstream. Post-edit hashes are recorded in
+  `tmp/subscription-usage-20261031/subscription-usage-types/post-edit-sha.txt`.
+- 2026-11-01: Completed. Accepted by adversarial and integration review
+  (session-593); archived to `impl-plans/completed/subscription-usage-types.md`.

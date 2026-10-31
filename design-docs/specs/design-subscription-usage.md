@@ -2,7 +2,11 @@
 
 ## Status
 
-Draft (accepted scope for branch `feat/subscription-usage`)
+Implemented on branch `feat/subscription-usage`. Implementation plans:
+`impl-plans/completed/subscription-usage-types.md`,
+`impl-plans/completed/subscription-usage-exchange.md`,
+`impl-plans/completed/subscription-usage-readme.md` and
+`impl-plans/completed/subscription-usage-reader-cli.md`.
 
 ## Goal
 

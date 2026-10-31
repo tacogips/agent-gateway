@@ -1,6 +1,6 @@
 # Subscription Usage: Reader, Vendor Parsers and CLI Command
 
-**Status**: Ready
+**Status**: Completed
 **Plan ID**: `subscription-usage-reader-cli`
 **Wave**: 2. Depends on `subscription-usage-types` and `subscription-usage-exchange`.
 **Design Reference**: `design-docs/specs/design-subscription-usage.md`
@@ -309,12 +309,12 @@ log. A truncated log, or a run that is still going, does not count as a pass.
 
 ## Done Criteria
 
-- [ ] The Contract symbols exist with the exact names and values.
-- [ ] Validation order and error messages match "Required Behavior".
-- [ ] All the listed tests exist and pass, and the build and lint checks above are clean.
-- [ ] `--vendor openai` exits 1 with -32040, verified.
-- [ ] Only the owned files changed (`git status --porcelain --untracked-files=all`).
-- [ ] No `.build` output was produced by this plan; all build and smoke output is under `tmp/subscription-usage-build/subscription-usage-reader-cli`.
+- [x] The Contract symbols exist with the exact names and values.
+- [x] Validation order and error messages match "Required Behavior".
+- [x] All the listed tests exist and pass, and the build and lint checks above are clean.
+- [x] `--vendor openai` exits 1 with -32040, verified.
+- [x] Only the owned files changed (`git status --porcelain --untracked-files=all`).
+- [x] No `.build` output was produced by this plan; all build and smoke output is under `tmp/subscription-usage-build/subscription-usage-reader-cli`.
 
 ## Progress Log
 
@@ -323,3 +323,18 @@ log. A truncated log, or a run that is still going, does not count as a pass.
   `tmp/subscription-usage-build/subscription-usage-reader-cli`. Build, test
   and `swift run` smokes now use `--scratch-path`, swiftlint uses
   `--cache-path`, and logs go under the root with no `tee`.
+
+- 2026-11-01: Implemented the reader and command with accepted wave-1 types and
+  exchange. Pre-edit and final source hashes are recorded in
+  `tmp/subscription-usage-20261031/subscription-usage-reader-cli/`.
+  Isolated build and focused tests passed (14 tests); scoped lint and strict
+  changed-file lint reported no violations. OpenAI smoke exited 1 with
+  -32040; Codex and Claude live smokes each exited 0 with one JSON line.
+  Complete command logs and output are under
+  `tmp/subscription-usage-build/subscription-usage-reader-cli/logs/`, with
+  copies under the plan evidence directory. Formal review and integration
+  verification remain downstream.
+- 2026-11-01: Completed. Accepted by adversarial and integration review
+  (session-593); archived to `impl-plans/completed/subscription-usage-reader-cli.md`.
+  Live Claude window parsing during branch review returned `rate_limits:null`;
+  the integration reconcile smoke showed fiveHour, weekly and model-scoped windows.

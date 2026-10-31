@@ -16,8 +16,9 @@ agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <pat
 agent-gateway [--help] [--version]
 ```
 
-`subscription-usage` prints one JSON object (`vendor`, `planType`,
-`available`, `windows[{kind, scope, windowMinutes, usedPercent, resetsAt}]`)
+`subscription-usage` prints one JSON object (`protocolVersion`, `vendor`,
+`planType`, `available`,
+`windows[{kind, scope, windowMinutes, usedPercent, resetsAt}]`)
 with the signed-in account's subscription rate-limit windows. On success,
 including `available: false`, it exits 0. On a vendor failure or an
 unsupported vendor (code `-32040`) it prints an error on stderr and exits 1.
