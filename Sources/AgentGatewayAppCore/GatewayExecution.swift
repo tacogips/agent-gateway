@@ -305,7 +305,7 @@ func gatewayRetryDelay(policy: GatewayRetryPolicy, attempt: Int) async throws {
   try await Task.sleep(for: .milliseconds(milliseconds))
 }
 
-private func defaultGatewayExecutable(_ vendor: GatewayVendor) -> String {
+func defaultGatewayExecutable(_ vendor: GatewayVendor) -> String {
   switch vendor {
   case .codex: "codex"
   case .claudeCode: "claude"
@@ -314,7 +314,7 @@ private func defaultGatewayExecutable(_ vendor: GatewayVendor) -> String {
   }
 }
 
-private func resolveGatewayExecutable(
+func resolveGatewayExecutable(
   _ executable: String,
   environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> String? {

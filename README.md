@@ -17,6 +17,9 @@ library (client, agent server, stdio/in-memory transports) usable on its own.
   OpenRouter `web` plugin); Cursor Cloud Agents reject it.
 - Decision models: TypeSafe Jev through OpenRouter Decisions (`choice`, `score`, `noul`).
 - Alternate provider routing for Codex and Claude Code, including OpenRouter.
+- Subscription usage: the signed-in account's rate-limit windows for Claude Code
+  and Codex, read through each CLI's own stdio protocol
+  (see [Subscription usage](#subscription-usage)).
 
 Provider credentials are referenced by environment-variable name. Secret values
 are never placed in Codex arguments or returned by the routing API.
@@ -260,6 +263,48 @@ The result's `pricingSource` field reports which layer answered
 (`litellm-remote`, `litellm-cache`, `fallback-table-remote`, or
 `fallback-table-cache`). Regenerate the fallback table with
 `mise run update-model-prices`.
+
+## Subscription usage
+
+Report the signed-in account's subscription rate-limit windows for `claude-code`
+(Claude Pro/Max 5-hour and weekly windows) and `codex` (ChatGPT/Codex plan windows):
+
+```bash
+agent-gateway subscription-usage --vendor codex
+agent-gateway subscription-usage --vendor claude-code --executable /path/to/claude
+```
+
+Example output:
+
+```json
+{"available":true,"planType":"max","protocolVersion":"...","vendor":"claude-code","windows":[{"kind":"fiveHour","resetsAt":"2026-10-31T18:00:00Z","usedPercent":28,"windowMinutes":300}]}
+```
+
+Each window's `kind` is `fiveHour`, `weekly`, or `other`, classified from
+`windowMinutes`. `scope` is absent for a plan-wide window, a model name for a
+Claude model-scoped weekly window, or the limit name or id for a non-default
+Codex bucket. `usedPercent` runs from 0 to 100, and `resetsAt` is an ISO 8601
+UTC string. An `available: false` result, for example when a CLI is signed in
+with an API key, exits successfully with an empty `windows` array.
+
+The gateway spawns the vendor CLI and asks it over the CLI's own stdio protocol:
+Claude Code's stream-json `get_usage` control request or Codex `app-server`'s
+`account/rateLimits/read`. The CLI uses its own sign-in; the gateway never reads
+credential files or the Keychain and never calls vendor HTTP endpoints. No prompt
+is sent to Claude, so nothing is billed; Claude takes about 15-20 seconds to start.
+
+From the library, use `GatewaySubscriptionUsageReading`:
+
+```swift
+let usage = try await ProductionGatewayExecutor().subscriptionUsage(
+  GatewaySubscriptionUsageParams(vendor: .codex)
+)
+```
+
+The `timeoutSeconds` option defaults to 60 seconds and is available only through
+the library. Other vendors fail with `GatewayRPCError` code `-32040` (CLI exit 1).
+A missing executable, launch or exit failure, timeout, or vendor error gives
+`-32041`. The CLI prints `subscription usage failed (<code>): <message>` to stderr.
 
 ## Audio transcription
 
