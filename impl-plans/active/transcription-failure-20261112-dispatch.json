@@ -1,0 +1,240 @@
+{
+  "taskId": "transcription-failure-20261112",
+  "workflowMode": "issue-resolution",
+  "implementationBranch": "feat/transcription-failure-detail",
+  "baseBranch": "main",
+  "remote": "origin",
+  "originalHead": "a464b40a07640106c21c99f2a84a7cd4b1aec4db",
+  "designDocPaths": [
+    "design-docs/specs/design-transcription-failure.md",
+    "design-docs/specs/design-transcribe-cli.md",
+    "design-docs/specs/command.md"
+  ],
+  "evidenceRoot": "tmp/transcription-failure-20261112",
+  "reviewContext": {
+    "issueReference": "workflowInput:transcription-failure-contract",
+    "userProblem": "AgentGatewayAppCore transcription failures are flattened into GatewayRPCError(-32010, \"vendor HTTP <status>: <first 500 bytes>\"). This drops Retry-After, drops vendor codes beyond 500 bytes, and gives no classification. Transport errors pass through raw, and the default URLSession silently follows 3xx redirects, which sends a second wire request. Callers such as Riela's speech-to-text node cannot classify failures.",
+    "requiredOutcomes": [
+      "Public GatewayTranscriptionFailure (Error, Sendable, Equatable, LocalizedError) with vendor, classification, httpStatus, retryAfterSeconds, vendorErrorType, vendorErrorCode, vendorMessage, rawBody (<= 16,384 UTF-8 bytes) and message; Classification has quotaExhausted, rateLimited, serverError, authFailed, invalidRequest, transport and unknown.",
+      "Every failure after the transport is called, except cancellation, throws GatewayTranscriptionFailure; rpcError maps to GatewayRPCError(-32010, message).",
+      "Retry-After is parsed from delta-seconds or an IMF-fixdate HTTP-date.",
+      "Exactly one wire request per transcribe call: a per-call redirect-refusing delegate, a 3xx reported with its status, and no internal retries.",
+      "The CLI prints the six-line structured stderr and exits 1 on GatewayTranscriptionFailure.",
+      "The README documents the failure contract.",
+      "mise run build, mise run test and mise run lint pass."
+    ],
+    "nonGoals": [
+      "No change to the success path, GatewayTranscriptionParams, GatewayTranscriptionResult, GatewayTranscribing, or the public ProductionGatewayExecutor.transcribe signature.",
+      "No retry logic inside agent-gateway.",
+      "No redirect classification case.",
+      "No parsing of body retry hints (Gemini RetryInfo), and no RFC 850 or asctime HTTP-date forms.",
+      "No changes to GatewayRPCError, GatewayProtocol.swift, Package.swift, or files unrelated to transcription."
+    ],
+    "constraints": [
+      "Source compatibility: checks before the transport keep throwing GatewayRPCError (-32021, -32602, -32011) or Foundation file errors; CancellationError keeps priority.",
+      "Never include API keys, Authorization headers, request URLs or String(describing: error) in failures, logs or test output; redact the secret before truncating.",
+      "Swift files stay under 1000 lines; swiftlint reports 0 violations; follow AGENTS.md and the Swift coding skill.",
+      "Each plan uses an isolated SwiftPM scratch path and logs under its artifact root."
+    ],
+    "designDecisionsAndRationale": [
+      {"decision": "Throw GatewayTranscriptionFailure directly and keep -32010 reachable through rpcError and errorDescription.", "rationale": "GatewayRPCError is a Codable wire struct in the AgentGateway module and has no payload field, so it cannot carry the structured failure."},
+      {"decision": "Classification order: vendor type/code first, then HTTP status.", "rationale": "OpenAI sends insufficient_quota on a 429, so vendor codes must win to separate quota exhaustion from rate limiting."},
+      {"decision": "Gemini RESOURCE_EXHAUSTED is classified as rateLimited.", "rationale": "Gemini uses it for both per-minute and per-day quotas; the message text is not reliable. Callers can inspect vendorMessage."},
+      {"decision": "3xx is classified as unknown with the status kept; 403 is authFailed.", "rationale": "The required enum has no redirect case."},
+      {"decision": "Redact the full body before truncating (DF-001).", "rationale": "Cutting first could leave a partial key prefix at the boundary. Secret removal takes precedence over keeping the legacy message byte-identical."},
+      {"decision": "A per-call redirect-refusing delegate that records the 3xx response, proven by a loopback regression test with a mutation check (DF-002).", "rationale": "Stub transports replace the very component that decides whether a redirect is followed, so only a real URLSession test proves one wire request."}
+    ],
+    "intentionalTradeoffs": [
+      "The thrown type changes for vendor and transport failures. Callers that caught GatewayRPCError must add a catch for GatewayTranscriptionFailure; the README documents this.",
+      "When the body echoes the key, the legacy -32010 message text differs from before because of [REDACTED].",
+      "The loopback plan temporarily mutates GatewayTranscription.swift and must restore it byte-identical, verified by sha256.",
+      "Plan artifacts and logs use tmp/transcription-failure-build/<planId>, as declared in the accepted plans; workflow-level evidence uses evidenceRoot."
+    ],
+    "supportedEdgeCases": [
+      "OpenAI 429 insufficient_quota/credit_balance_exhausted -> quotaExhausted with the code preserved.",
+      "429 rate_limit_exceeded with Retry-After: 7 -> rateLimited, retryAfterSeconds 7.",
+      "503 -> serverError; 401/403 -> authFailed; 402 -> quotaExhausted; other 4xx -> invalidRequest.",
+      "302 -> failure with httpStatus 302, the redirect not followed, exactly one request.",
+      "A body longer than 500 bytes (up to 20,000 bytes) still yields the vendor code; rawBody is capped at 16,384 bytes.",
+      "Transport URLError -> transport; CancellationError is rethrown unchanged.",
+      "Non-HTTP response, 2xx invalid JSON or invalid payload -> unknown.",
+      "Gemini and OpenRouter error shapes; the Gemini key in the URL never leaks.",
+      "The secret placed at the 500-byte and 16,384-byte truncation boundaries is redacted."
+    ],
+    "outOfScopeEdgeCases": [
+      "Gemini RetryInfo body hints.",
+      "Obsolete RFC 850 and asctime Retry-After formats.",
+      "Runtime verification of the Linux FoundationNetworking redirect delegate (compile-checked only).",
+      "Retries or backoff."
+    ],
+    "sourcePaths": [
+      "Sources/AgentGatewayAppCore/GatewayTranscriptionFailure.swift",
+      "Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+      "Sources/AgentGatewayAppCore/GatewayTranscriptionRequest.swift",
+      "Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift",
+      "Tests/AgentGatewayTests/GatewayTranscriptionFailureTests.swift",
+      "Tests/AgentGatewayTests/GatewayTranscriptionTests.swift",
+      "Tests/AgentGatewayTests/GatewayTranscriptionFailurePipelineTests.swift",
+      "Tests/AgentGatewayTests/LoopbackHTTPServer.swift",
+      "Tests/AgentGatewayTests/GatewayTranscriptionRedirectTests.swift",
+      "Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift",
+      "README.md"
+    ]
+  },
+  "waves": [
+    ["transcription-failure-type", "transcription-failure-readme"],
+    ["transcription-failure-pipeline"],
+    ["transcription-failure-cli", "transcription-failure-loopback"]
+  ],
+  "plans": [
+    {
+      "planId": "transcription-failure-type",
+      "planPath": "impl-plans/active/transcription-failure-type.md",
+      "dependsOn": [],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayTranscriptionFailure.swift",
+        "Tests/AgentGatewayTests/GatewayTranscriptionFailureTests.swift",
+        "impl-plans/active/transcription-failure-type.md",
+        "tmp/transcription-failure-build/transcription-failure-type"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": ["tmp/transcription-failure-build/transcription-failure-type"],
+      "acceptanceCriteria": [
+        "The public GatewayTranscriptionFailure, Classification, init, rpcError and errorDescription match the pinned contract exactly.",
+        "Internal helpers (redaction, UTF-8 prefix, Retry-After parser, vendor body parser, classifier) and the httpFailure/responseFailure/transportFailure factories exist with the pinned signatures.",
+        "Redaction is applied to the full body before the 500-byte and 16,384-byte prefixes are taken.",
+        "All the listed Retry-After, classification, body parser, factory and redaction tests pass; the existing transcription tests still pass; swiftlint reports 0 violations."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcription-failure-build/transcription-failure-type/logs",
+        "swift build --scratch-path tmp/transcription-failure-build/transcription-failure-type > tmp/transcription-failure-build/transcription-failure-type/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-type --filter GatewayTranscriptionFailureTests > tmp/transcription-failure-build/transcription-failure-type/logs/test.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-type --filter GatewayTranscription > tmp/transcription-failure-build/transcription-failure-type/logs/regression.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcription-failure-build/transcription-failure-type/swiftlint-cache Sources/AgentGatewayAppCore/GatewayTranscriptionFailure.swift Tests/AgentGatewayTests/GatewayTranscriptionFailureTests.swift > tmp/transcription-failure-build/transcription-failure-type/logs/lint.log 2>&1; echo exit=$?",
+        "wc -l Sources/AgentGatewayAppCore/GatewayTranscriptionFailure.swift Tests/AgentGatewayTests/GatewayTranscriptionFailureTests.swift",
+        "git status --porcelain --untracked-files=all"
+      ]
+    },
+    {
+      "planId": "transcription-failure-readme",
+      "planPath": "impl-plans/active/transcription-failure-readme.md",
+      "dependsOn": [],
+      "writePaths": [
+        "README.md",
+        "impl-plans/active/transcription-failure-readme.md"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "README ## Audio transcription documents items 1-9: failure sources, fields, classification, Retry-After, one request, rpcError compatibility, secrets, the six-line CLI stderr with exit 1, and a Swift catch snippet.",
+        "Nothing outside ## Audio transcription changes; no emojis; README hashes are recorded."
+      ],
+      "verification": [
+        "grep -n \"GatewayTranscriptionFailure\\|quotaExhausted\\|rateLimited\\|retry-after-seconds\\|Retry-After\\|rpcError\\|REDACTED\" README.md",
+        "grep -n \"^## Audio transcription\\|^## Provider routing library\\|^### Failure contract\" README.md",
+        "git diff --stat -- README.md",
+        "git diff README.md",
+        "grep -nP \"[\\x{1F300}-\\x{1FAFF}]\" README.md; echo exit=$?"
+      ]
+    },
+    {
+      "planId": "transcription-failure-pipeline",
+      "planPath": "impl-plans/active/transcription-failure-pipeline.md",
+      "dependsOn": ["transcription-failure-type"],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayTranscriptionRequest.swift",
+        "Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "Tests/AgentGatewayTests/GatewayTranscriptionTests.swift",
+        "Tests/AgentGatewayTests/GatewayTranscriptionFailurePipelineTests.swift",
+        "impl-plans/active/transcription-failure-pipeline.md",
+        "tmp/transcription-failure-build/transcription-failure-pipeline"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": ["tmp/transcription-failure-build/transcription-failure-pipeline"],
+      "acceptanceCriteria": [
+        "Every failure after the transport is called, except cancellation, is a GatewayTranscriptionFailure; failures before the transport are unchanged.",
+        "The production transport refuses redirects with a per-call GatewayTranscriptionRedirectRefusal delegate and returns the recorded 3xx response when data(for:) throws.",
+        "Stub pipeline cases 1-13 pass, including exactly one request per call (also for 302), 429 quota/rate-limit with Retry-After 7, 503, 401, a body longer than 500 bytes, transport, and secret-boundary redaction.",
+        "The two updated legacy tests pass and all other transcription tests pass unchanged; no new public symbols; build, test and lint exit 0."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcription-failure-build/transcription-failure-pipeline/logs",
+        "swift build --scratch-path tmp/transcription-failure-build/transcription-failure-pipeline > tmp/transcription-failure-build/transcription-failure-pipeline/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-pipeline --filter GatewayTranscription > tmp/transcription-failure-build/transcription-failure-pipeline/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcription-failure-build/transcription-failure-pipeline/swiftlint-cache Sources/AgentGatewayAppCore/GatewayTranscriptionRequest.swift Sources/AgentGatewayAppCore/GatewayTranscription.swift Tests/AgentGatewayTests/GatewayTranscriptionTests.swift Tests/AgentGatewayTests/GatewayTranscriptionFailurePipelineTests.swift > tmp/transcription-failure-build/transcription-failure-pipeline/logs/lint.log 2>&1; echo exit=$?",
+        "grep -n \"public\" Sources/AgentGatewayAppCore/GatewayTranscription.swift Sources/AgentGatewayAppCore/GatewayTranscriptionRequest.swift",
+        "grep -n \"delegate:\" Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "git diff --stat"
+      ]
+    },
+    {
+      "planId": "transcription-failure-cli",
+      "planPath": "impl-plans/active/transcription-failure-cli.md",
+      "dependsOn": ["transcription-failure-type", "transcription-failure-pipeline"],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift",
+        "Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift",
+        "impl-plans/active/transcription-failure-cli.md",
+        "tmp/transcription-failure-build/transcription-failure-cli"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": ["tmp/transcription-failure-build/transcription-failure-cli"],
+      "acceptanceCriteria": [
+        "GatewayTranscriptionFailure is caught first in runTranscription and rendered as the exact six-line stderr (message, classification, http-status, vendor-error-type, vendor-error-code, retry-after-seconds; nil prints as none), with exit 1 and empty stdout.",
+        "The structuredQuotaFailure, structuredTransportFailure and secretBoundaryInStderr tests pass; the existing TranscribeCommandTests, including httpErrors, pass unchanged.",
+        "Build, test and lint exit 0."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcription-failure-build/transcription-failure-cli/logs",
+        "swift build --scratch-path tmp/transcription-failure-build/transcription-failure-cli > tmp/transcription-failure-build/transcription-failure-cli/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-cli --filter TranscribeCommandTests > tmp/transcription-failure-build/transcription-failure-cli/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcription-failure-build/transcription-failure-cli/swiftlint-cache Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift > tmp/transcription-failure-build/transcription-failure-cli/logs/lint.log 2>&1; echo exit=$?",
+        "wc -l Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift",
+        "git diff --stat"
+      ]
+    },
+    {
+      "planId": "transcription-failure-loopback",
+      "planPath": "impl-plans/active/transcription-failure-loopback.md",
+      "dependsOn": ["transcription-failure-type", "transcription-failure-pipeline"],
+      "writePaths": [
+        "Tests/AgentGatewayTests/LoopbackHTTPServer.swift",
+        "Tests/AgentGatewayTests/GatewayTranscriptionRedirectTests.swift",
+        "impl-plans/active/transcription-failure-loopback.md",
+        "tmp/transcription-failure-build/transcription-failure-loopback"
+      ],
+      "sharedPaths": ["Sources/AgentGatewayAppCore/GatewayTranscription.swift"],
+      "sharedPathNotes": [
+        {
+          "path": "Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+          "intendedEdit": "Temporary one-line mutation that removes the delegate from URLSession(...) to prove the loopback test fails, then a manual revert. The sha256 must be byte-identical before and after. There is no net change."
+        }
+      ],
+      "artifactRoots": ["tmp/transcription-failure-build/transcription-failure-loopback"],
+      "acceptanceCriteria": [
+        "The loopback test passes with the production transport: one request to /v1/audio/transcriptions, zero to /redirected, httpStatus 302, classification unknown, and the key absent from String(describing: failure).",
+        "The mutation check proves detection: a non-zero exit, 'redirect was followed' (or a failed /redirected count) in logs/mutation.log, no ' error: ' compiler lines, and cli-owned file hashes recorded; an inconclusive result is reported as a blocked check.",
+        "GatewayTranscription.swift is restored byte-identical (sha256 match) and test-after-restore.log shows exit=0 with 1 test passed.",
+        "Build, test, regression and lint exit 0."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcription-failure-build/transcription-failure-loopback/logs",
+        "swift build --scratch-path tmp/transcription-failure-build/transcription-failure-loopback --build-tests > tmp/transcription-failure-build/transcription-failure-loopback/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-loopback --filter GatewayTranscriptionRedirectTests > tmp/transcription-failure-build/transcription-failure-loopback/logs/test.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-loopback --filter GatewayTranscriptionRedirectTests > tmp/transcription-failure-build/transcription-failure-loopback/logs/mutation.log 2>&1; echo exit=$?",
+        "grep -n \"redirect was followed\" tmp/transcription-failure-build/transcription-failure-loopback/logs/mutation.log; echo exit=$?",
+        "grep -n \" error: \" tmp/transcription-failure-build/transcription-failure-loopback/logs/mutation.log; echo exit=$?",
+        "shasum -a 256 Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-loopback --filter GatewayTranscriptionRedirectTests > tmp/transcription-failure-build/transcription-failure-loopback/logs/test-after-restore.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcription-failure-build/transcription-failure-loopback --filter GatewayTranscription > tmp/transcription-failure-build/transcription-failure-loopback/logs/regression.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcription-failure-build/transcription-failure-loopback/swiftlint-cache Tests/AgentGatewayTests/LoopbackHTTPServer.swift Tests/AgentGatewayTests/GatewayTranscriptionRedirectTests.swift > tmp/transcription-failure-build/transcription-failure-loopback/logs/lint.log 2>&1; echo exit=$?",
+        "git diff --stat -- Sources/AgentGatewayAppCore/GatewayTranscription.swift"
+      ]
+    }
+  ],
+  "integrationVerification": [
+    "mise run build",
+    "mise run test",
+    "mise run lint"
+  ]
+}
