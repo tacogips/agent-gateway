@@ -1,0 +1,211 @@
+{
+  "taskId": "transcribe-cli-20261112",
+  "workflowMode": "issue-resolution",
+  "implementationBranch": "feat/transcribe-cli",
+  "baseBranch": "main",
+  "remote": "origin",
+  "originalHead": "5722ce38590b11b767e4d45ca4e42f01a28c162b",
+  "designDocPaths": [
+    "design-docs/specs/design-transcribe-cli.md",
+    "design-docs/specs/command.md"
+  ],
+  "evidenceRoot": "tmp/transcribe-cli-20261112",
+  "reviewContext": {
+    "issueReference": "none (no GitHub issue supplied; scope from workflowInput on branch feat/transcribe-cli)",
+    "userProblem": "Audio transcription for OpenAI, Gemini and OpenRouter exists only as a library API (ProductionGatewayExecutor().transcribe(GatewayTranscriptionParams)). The agent-gateway CLI has no way to run it.",
+    "requiredOutcomes": [
+      "`agent-gateway transcribe --vendor <openai|gemini|openrouter> --model <id> --file <path> [--mime-type] [--language] [--prompt] [--api-key-environment] [--base-url] [--timeout-seconds] [--output text|json]` works for openai through a stubbed transport in tests, for both text and json output.",
+      "The MIME type is inferred from the file extension (static table). Missing, oversized (>25,000,000 bytes) and unsupported files are rejected with clear errors.",
+      "Unsupported vendors return -32021 with no file or network I/O.",
+      "`agent-gateway --help` and README.md list the subcommand with an example.",
+      "mise run build, mise run test and mise run lint pass."
+    ],
+    "nonGoals": [
+      "Reimplementing vendor HTTP calls, request building or response parsing.",
+      "Changing GatewayTranscriptionParams, GatewayTranscriptionResult, GatewayTranscribing or any public API.",
+      "Adding fields to GatewayClientOptions, or changing parseOptions or writeJSONLine.",
+      "Editing main.swift, GatewayExecution.swift or GatewayTranscriptionRequest.swift.",
+      "A live transcription smoke test with a real API key (optional, not required).",
+      "Release, version bump, push or PR work."
+    ],
+    "constraints": [
+      "Reuse GatewayTranscriptionParams/GatewayTranscribing as is; do not reimplement HTTP calls.",
+      "Credentials are referenced only by environment-variable name. Never print, log or echo secret values or request URLs (Gemini keys are in the query string).",
+      "Unsupported vendors keep gatewayTranscriptionUnsupportedCode (-32021). Vendor HTTP failures keep `vendor HTTP <status>: <body>` (-32010) so insufficient_quota and rate_limit_exceeded are visible. Exit is non-zero, and diagnostics go to stderr only.",
+      "Swift files stay under 1000 lines, swiftlint is clean, and there are no emojis or unrelated file edits (AGENTS.md and the Swift coding skill)."
+    ],
+    "designDecisionsAndRationale": [
+      {
+        "decision": "Dedicated transcribe flag parser (an AppCommand extension in GatewayTranscriptionCommand.swift) instead of new GatewayClientOptions fields.",
+        "rationale": "Other subcommands must not silently accept --file, --output and the other transcribe-only flags. Parse errors reuse unknownArgument/missingValue, so main.swift keeps mapping them to exit 2."
+      },
+      {
+        "decision": "Extract validateGatewayTranscriptionVendor(_:) from the inline guard in transcriptionAPIKey, and have the CLI call it before MIME inference.",
+        "rationale": "One shared check keeps the CLI and the library from drifting apart and makes -32021 win over MIME inference and file I/O errors."
+      },
+      {
+        "decision": "Internal transport seam: GatewayTranscriptionTransport typealias, defaultGatewayTranscriptionTransport, and GatewayTranscriptionPipeline. ProductionGatewayExecutor.transcribe becomes a one-line delegation.",
+        "rationale": "CLI tests run the real production path with only the HTTP call stubbed. The stub's request count proves there is no network access, and there is no public API or stored-property change."
+      },
+      {
+        "decision": "runTranscription returns an outcome {status, standardOutput, standardError} instead of writing to file handles.",
+        "rationale": "Tests can assert on stdout, stderr and the exit code directly. Command.swift writes the outcome and returns the status."
+      },
+      {
+        "decision": "Static, case-insensitive MIME table (wav, mp3/mpga/mpeg, m4a/mp4, webm, ogg/oga, flac, aac). UniformTypeIdentifiers is not used.",
+        "rationale": "Portable to Linux, and every value is accepted by transcriptionAudioFormat. An unknown extension gives -32602 and tells the user to pass --mime-type."
+      },
+      {
+        "decision": "Each Swift-building plan owns a gitignored scratch root tmp/transcribe-cli-build/<planId>, listed in both writePaths and artifactRoots.",
+        "rationale": "No .build contention between parallel implementers. tmp/ is gitignored and excluded in .swiftlint.yml. Only integration verification uses the default .build."
+      }
+    ],
+    "intentionalTradeoffs": [
+      "Behavior equivalence of the pipeline extraction is guarded only by the unchanged GatewayTranscriptionTests and the new CLI tests.",
+      "A --prompt value that starts with '--' is rejected with exit 2 (inherited from the decisionOptions convention).",
+      "agent-gateway transcribe --help prints the global usage, not command-specific help.",
+      "The wave-1 seam plan runs a full-package swift build/test while the docs-only README plan runs in the same wave. The risk is low because the scratch paths are disjoint and the sibling edits only README.md.",
+      "README.md has no Usage section, so the CLI synopsis and examples go into ## Audio transcription."
+    ],
+    "supportedEdgeCases": [
+      "Uppercase extension (.WAV) inference.",
+      "An explicit --mime-type overrides the extension.",
+      "Unknown or missing extension with no --mime-type: -32602 and zero transport calls.",
+      "Unsupported known vendors (anthropic, cursor, cursor-api, claude-code, codex): -32021 before MIME inference, file I/O or network I/O.",
+      "Missing file: exit 1, transcription failed, zero transport calls.",
+      "Sparse file of 25,000,001 bytes: -32602 with '25 MB', and no read before the stat check.",
+      "HTTP 429 with insufficient_quota vs rate_limit_exceeded: -32010 with the body preserved.",
+      "Missing credential: -32011 naming only the environment variable.",
+      "Repeated flags: the last value wins. An unknown flag, a positional argument or `--` gives unknownArgument (exit 2). A missing or invalid value gives missingValue (exit 2).",
+      "Empty transcript prints a single newline."
+    ],
+    "outOfScopeEdgeCases": [
+      "--prompt values that start with '--'.",
+      "Live vendor calls with real credentials.",
+      "Content sniffing of audio files (only the extension is used)."
+    ],
+    "sourcePaths": [
+      "design-docs/specs/design-transcribe-cli.md",
+      "design-docs/specs/command.md",
+      "impl-plans/active/transcribe-transport-seam.md",
+      "impl-plans/active/transcribe-readme.md",
+      "impl-plans/active/transcribe-cli-command.md",
+      "Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+      "Sources/AgentGatewayAppCore/GatewayTranscriptionRequest.swift",
+      "Sources/AgentGatewayAppCore/GatewayAPIRequest.swift",
+      "Sources/AgentGatewayAppCore/GatewayDecisionCommand.swift",
+      "Sources/AgentGatewayAppCore/Command.swift",
+      "Sources/AgentGatewayCLI/main.swift",
+      "Tests/AgentGatewayTests/GatewayTranscriptionTests.swift",
+      "Tests/AgentGatewayAppCoreTests/DecisionCommandTests.swift",
+      "README.md"
+    ]
+  },
+  "acceptedDependencies": [],
+  "plans": [
+    {
+      "planId": "transcribe-transport-seam",
+      "planPath": "impl-plans/active/transcribe-transport-seam.md",
+      "dependsOn": [],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "impl-plans/active/transcribe-transport-seam.md",
+        "tmp/transcribe-cli-build/transcribe-transport-seam"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [
+        "tmp/transcribe-cli-build/transcribe-transport-seam"
+      ],
+      "acceptanceCriteria": [
+        "Internal validateGatewayTranscriptionVendor(_:), GatewayTranscriptionTransport, defaultGatewayTranscriptionTransport and GatewayTranscriptionPipeline exist with the plan signatures. None is public.",
+        "transcriptionAPIKey calls validateGatewayTranscriptionVendor first, and the -32021 message and check order (vendor, protocol, timeout, credential) are unchanged.",
+        "ProductionGatewayExecutor.transcribe delegates to GatewayTranscriptionPipeline(environment:transport: defaultGatewayTranscriptionTransport), with the same public signature and the three cancellation checks preserved.",
+        "Existing GatewayTranscriptionTests pass unchanged, the build has no new warnings, and swiftlint reports 0 violations.",
+        "Only GatewayTranscription.swift and this plan file change within this plan's scope. Logs are under tmp/transcribe-cli-build/transcribe-transport-seam/logs."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcribe-cli-build/transcribe-transport-seam/logs",
+        "swift build --scratch-path tmp/transcribe-cli-build/transcribe-transport-seam > tmp/transcribe-cli-build/transcribe-transport-seam/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcribe-cli-build/transcribe-transport-seam --filter GatewayTranscription > tmp/transcribe-cli-build/transcribe-transport-seam/logs/test.log 2>&1; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcribe-cli-build/transcribe-transport-seam/swiftlint-cache Sources/AgentGatewayAppCore/GatewayTranscription.swift; echo exit=$?",
+        "grep -n \"public\" Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "git diff --stat -- Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "git status --porcelain --untracked-files=all"
+      ]
+    },
+    {
+      "planId": "transcribe-readme",
+      "planPath": "impl-plans/active/transcribe-readme.md",
+      "dependsOn": [],
+      "writePaths": [
+        "README.md",
+        "impl-plans/active/transcribe-readme.md"
+      ],
+      "sharedPaths": [],
+      "artifactRoots": [],
+      "acceptanceCriteria": [
+        "The ## Audio transcription section contains the CLI sentence, three bash examples (openai, gemini --output json, openrouter --api-key-environment), the flag list, the output formats, the MIME inference rules, the errors (-32021, -32010, -32011, exit 1 and 2) and the secrets note.",
+        "At least 3 'agent-gateway transcribe' lines, all inside ## Audio transcription.",
+        "Additions only (git diff --numstat deleted column is 0). No edits outside the section, design-docs/specs/command.md is not edited, and there are no emojis."
+      ],
+      "verification": [
+        "grep -n \"agent-gateway transcribe\" README.md",
+        "grep -n \"^## Audio transcription\\|^## Provider routing library\" README.md",
+        "grep -c -- \"-32021\\|-32010\\|-32011\\|--mime-type\\|--output\" README.md",
+        "git diff --numstat README.md",
+        "git diff README.md",
+        "git status --porcelain --untracked-files=all"
+      ]
+    },
+    {
+      "planId": "transcribe-cli-command",
+      "planPath": "impl-plans/active/transcribe-cli-command.md",
+      "dependsOn": [
+        "transcribe-transport-seam"
+      ],
+      "writePaths": [
+        "Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift",
+        "Sources/AgentGatewayAppCore/Command.swift",
+        "Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift",
+        "impl-plans/active/transcribe-cli-command.md",
+        "tmp/transcribe-cli-build/transcribe-cli-command"
+      ],
+      "sharedPaths": [],
+      "sharedPathNotes": [
+        {
+          "path": "Sources/AgentGatewayAppCore/Command.swift",
+          "intendedEdit": "Add \"transcribe\" to the run() allow-list (line 26), add a runStreaming case \"transcribe\" (parse, runTranscription with ProductionGatewayExecutor(), write stdout/stderr, return status), and add the usage synopsis line after subscription-usage plus a short paragraph. No visibility changes to parseOptions/writeJSONLine and no unrelated reformatting."
+        }
+      ],
+      "artifactRoots": [
+        "tmp/transcribe-cli-build/transcribe-cli-command"
+      ],
+      "acceptanceCriteria": [
+        "Internal GatewayTranscriptionOutputFormat, GatewayTranscriptionCommandOptions, GatewayTranscriptionCommandOutcome, AppCommand.transcriptionOptions(_:), AppCommand.runTranscription(_:transcriber:) and inferGatewayTranscriptionMIMEType(path:) exist with the plan signatures.",
+        "runTranscription order: vendor check (-32021), MIME resolution (-32602 when it cannot be inferred), params build, transcribe, format. The CLI never stats or opens the file. Stdout carries only the transcript or the JSON {model,text,vendor} line. Errors go to stderr as `transcription failed (<code>): <message>` with exit 1.",
+        "transcribe is in the run() allow-list, the runStreaming() switch and the usage text. --help lists it.",
+        "All 13 TranscribeCommandTests groups pass with the recording transport stub (no network), and the 'CommandTests|GatewayTranscription' regression run passes.",
+        "`swift run agent-gateway transcribe --vendor anthropic --model m --file /nonexistent/a.mp3` exits 1 with `transcription failed (-32021): anthropic does not support audio transcription`.",
+        "swiftlint is clean on owned files, every file is under 1000 lines, and logs are under tmp/transcribe-cli-build/transcribe-cli-command/logs."
+      ],
+      "verification": [
+        "mkdir -p tmp/transcribe-cli-build/transcribe-cli-command/logs",
+        "grep -n \"GatewayTranscriptionPipeline\\|validateGatewayTranscriptionVendor\" Sources/AgentGatewayAppCore/GatewayTranscription.swift",
+        "swift build --scratch-path tmp/transcribe-cli-build/transcribe-cli-command > tmp/transcribe-cli-build/transcribe-cli-command/logs/build.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcribe-cli-build/transcribe-cli-command --filter TranscribeCommandTests > tmp/transcribe-cli-build/transcribe-cli-command/logs/test.log 2>&1; echo exit=$?",
+        "swift test --scratch-path tmp/transcribe-cli-build/transcribe-cli-command --filter \"CommandTests|GatewayTranscription\" > tmp/transcribe-cli-build/transcribe-cli-command/logs/regression.log 2>&1; echo exit=$?",
+        "swift run --scratch-path tmp/transcribe-cli-build/transcribe-cli-command agent-gateway --help > tmp/transcribe-cli-build/transcribe-cli-command/logs/help.log 2>&1; echo exit=$?",
+        "swift run --scratch-path tmp/transcribe-cli-build/transcribe-cli-command --skip-build agent-gateway transcribe --vendor anthropic --model m --file /nonexistent/a.mp3 > tmp/transcribe-cli-build/transcribe-cli-command/logs/smoke-unsupported.out 2> tmp/transcribe-cli-build/transcribe-cli-command/logs/smoke-unsupported.err; echo exit=$?",
+        "swiftlint lint --cache-path tmp/transcribe-cli-build/transcribe-cli-command/swiftlint-cache Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift Sources/AgentGatewayAppCore/Command.swift Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift; echo exit=$?",
+        "wc -l Sources/AgentGatewayAppCore/Command.swift Sources/AgentGatewayAppCore/GatewayTranscriptionCommand.swift Tests/AgentGatewayAppCoreTests/TranscribeCommandTests.swift",
+        "git status --porcelain --untracked-files=all"
+      ]
+    }
+  ],
+  "integrationVerification": [
+    "mise run build",
+    "mise run test",
+    "mise run lint",
+    "swift run agent-gateway --help"
+  ]
+}
