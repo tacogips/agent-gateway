@@ -1,3 +1,5 @@
+import ACP
+import Foundation
 import Testing
 @testable import AgentGateway
 @testable import AgentGatewayAppCore
@@ -135,5 +137,38 @@ import Testing
     #expect(throws: AppCommand.Error.self) {
       _ = try command.serverProtocolVersions(["--acp-versions", invalid])
     }
+  }
+}
+
+@Test func clientAnswersPermissionRequestsByPolicyAndNeverSelectsUnofferedOptions() async throws {
+  let params = Data(#"""
+  {"sessionId":"s","title":"Run this script?","options":[
+    {"optionId":"always","name":"Always","kind":"allow_always"},
+    {"optionId":"once","name":"Once","kind":"allow_once"},
+    {"optionId":"no","name":"No","kind":"reject_once"}]}
+  """#.utf8)
+  func answer(_ policy: GatewayClientPermissionPolicy, _ params: Data) async throws -> ACPRequestPermissionResponse {
+    let data = try await GatewayClientPermissionResponder(policy: policy)
+      .handleRequest(method: ACPMethod.sessionRequestPermission, params: params)
+    return try JSONDecoder().decode(ACPRequestPermissionResponse.self, from: data)
+  }
+  // The default declines; the agent must not proceed.
+  #expect(try await answer(.cancel, params).outcome == .cancelled)
+  #expect(try await answer(.allow, params).outcome == .selected(optionId: "once"))
+  #expect(try await answer(.reject, params).outcome == .selected(optionId: "no"))
+  // With no matching option offered, the request is declined rather than
+  // answered with an id the agent never offered.
+  let rejectOnly = Data(#"{"sessionId":"s","options":[{"optionId":"no","name":"No","kind":"reject_once"}]}"#.utf8)
+  #expect(try await answer(.allow, rejectOnly).outcome == .cancelled)
+
+  let command = AppCommand(arguments: [])
+  let base = ["--agent", "/bin/agent", "--prompt", "hi"]
+  #expect(try command.clientOptions(base).permissionPolicy == .cancel)
+  #expect(try command.clientOptions(base + ["--permission", "allow"]).permissionPolicy == .allow)
+  #expect(throws: AppCommand.Error.self) {
+    _ = try command.clientOptions(base + ["--permission", "maybe"])
+  }
+  await #expect(throws: ACPError.self) {
+    _ = try await GatewayClientPermissionResponder().handleRequest(method: "fs/read_text_file", params: Data("{}".utf8))
   }
 }

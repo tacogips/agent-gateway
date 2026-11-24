@@ -81,7 +81,9 @@ external ACP adapter is involved.
 
 `agent-gateway client` requests v1 by default and v2 with `--acp-version 2`
 (falling back to v1 when the agent selects it). ACP v2 is in Preview
-upstream, which is why it is opt-in for clients here.
+upstream, which is why it is opt-in for clients here. The client answers an
+agent's `session/request_permission` by policy: `--permission cancel`
+(default, decline), `allow`, or `reject`.
 
 What changes for a host between the two versions:
 

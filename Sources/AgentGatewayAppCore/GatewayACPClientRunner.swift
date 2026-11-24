@@ -27,6 +27,8 @@ public struct GatewayACPClientOptions: Sendable {
   /// ACP protocol version to request. Version 2 falls back to version 1
   /// when the agent selects it.
   public var protocolVersion: Int
+  /// How `session/request_permission` requests from the agent are answered.
+  public var permissionPolicy: GatewayClientPermissionPolicy
 
   public init(
     prompt: String,
@@ -37,7 +39,8 @@ public struct GatewayACPClientOptions: Sendable {
     agentArguments: [String] = [],
     serverOptions: [String] = [],
     sessionMeta: ACPJSONValue? = nil,
-    protocolVersion: Int = ACPProtocol.versionV1
+    protocolVersion: Int = ACPProtocol.versionV1,
+    permissionPolicy: GatewayClientPermissionPolicy = .cancel
   ) {
     self.prompt = prompt
     self.cwd = cwd
@@ -48,6 +51,61 @@ public struct GatewayACPClientOptions: Sendable {
     self.serverOptions = serverOptions
     self.sessionMeta = sessionMeta
     self.protocolVersion = protocolVersion
+    self.permissionPolicy = permissionPolicy
+  }
+}
+
+/// How the non-interactive `client` command answers an agent's
+/// `session/request_permission`. There is no user to ask, so the answer is
+/// a fixed policy.
+public enum GatewayClientPermissionPolicy: String, Equatable, Sendable {
+  /// Decline by policy with the `cancelled` outcome (default). The agent
+  /// must not proceed with the operation.
+  case cancel
+  /// Select the first `allow_once` option, else the first `allow_always`.
+  case allow
+  /// Select the first `reject_once` option, else the first `reject_always`.
+  case reject
+}
+
+/// Answers `session/request_permission`, the one request every ACP client
+/// must handle in both protocol versions. The options and the response have
+/// the same shape in v1 and v2, so one responder serves both.
+public struct GatewayClientPermissionResponder: ACPClientDelegate {
+  public var policy: GatewayClientPermissionPolicy
+
+  public init(policy: GatewayClientPermissionPolicy = .cancel) {
+    self.policy = policy
+  }
+
+  public func sessionUpdate(_ notification: ACPSessionNotification) async {}
+
+  public func handleRequest(method: String, params: Data) async throws -> Data {
+    guard method == ACPMethod.sessionRequestPermission else {
+      throw ACPError.methodNotFound(method)
+    }
+    struct Params: Decodable {
+      var options: [ACPPermissionOption]
+    }
+    let request = try ACPConnection.decodeParams(Params.self, from: params)
+    return try ACPConnection.encodeResult(ACPRequestPermissionResponse(outcome: outcome(for: request.options)))
+  }
+
+  /// Only an option the agent offered is ever selected; when the policy's
+  /// kinds are not offered the request is declined.
+  func outcome(for options: [ACPPermissionOption]) -> ACPRequestPermissionResponse.Outcome {
+    let preferredKinds: [String]
+    switch policy {
+    case .cancel: return .cancelled
+    case .allow: preferredKinds = [ACPPermissionOption.allowOnce, ACPPermissionOption.allowAlways]
+    case .reject: preferredKinds = [ACPPermissionOption.rejectOnce, ACPPermissionOption.rejectAlways]
+    }
+    for kind in preferredKinds {
+      if let option = options.first(where: { $0.kind == kind }) {
+        return .selected(optionId: option.optionId)
+      }
+    }
+    return .cancelled
   }
 }
 
@@ -84,7 +142,9 @@ public struct GatewayACPClientRunner: Sendable {
       input: output.fileHandleForReading,
       output: input.fileHandleForWriting
     )
-    let client = ACPClientConnection(transport: transport)
+    let client = ACPClientConnection(
+      transport: transport, delegate: GatewayClientPermissionResponder(policy: options.permissionPolicy)
+    )
     // The raw agent-to-client ACP messages are the CLI's stdout stream:
     // one JSON-RPC message per line (session/update notifications followed
     // by each request's response).

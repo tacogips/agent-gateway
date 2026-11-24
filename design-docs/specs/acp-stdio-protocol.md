@@ -316,6 +316,16 @@ text from stdin (recommended for large prompts); repeatable `--image <path>`
 and `--image-data <mimeType>:<base64>` become ACP image content blocks in the
 prompt.
 
+The client answers `session/request_permission`, the one request every ACP
+client must handle in both versions. It is non-interactive, so the answer is
+a policy set with `--permission`: `cancel` (default) declines with the
+`cancelled` outcome, `allow` selects the first `allow_once` (else
+`allow_always`) option, and `reject` the first `reject_once` (else
+`reject_always`) option. An option the agent did not offer is never
+selected. Other agent requests get `-32601`; the client advertises no
+file-system, terminal, or elicitation capability. Library hosts get the same
+behavior from `GatewayClientPermissionResponder`.
+
 ## Conformance
 
 `scripts/acp-tck.sh` runs the upstream
@@ -350,6 +360,16 @@ calls, terminals, plans, permission requests, subagents, slash commands.
 The one advisory failure, v1 only, is `ACP-SESSION-004`: the agent should
 connect to the stdio MCP servers a client supplies. The gateway does not
 connect vendor executions to client-provided MCP servers (see Capabilities).
+
+The TCK judges agents only. The client side is checked against the upstream
+TypeScript SDK's dual-version reference agent
+(`src/examples/dual-version-agent.ts`, SDK 2.12.0): `agent-gateway client
+--agent <reference>` completes a turn with `--acp-version 1` and with
+`--acp-version 2`, including the reference agent's permission request under
+both the `cancel` and `allow` policies. In the other direction, the same
+SDK's typed v1 and v2 clients drive `agent-gateway server` through
+initialize, session/new, a prompt turn, session/list, and (v2) an
+idempotent retry, close, and resume with replay.
 
 The TCK is experimental and tracks a v2 schema slightly older than the one
 this implementation targets, so a passing run is evidence, not an official

@@ -110,7 +110,7 @@ public struct AppCommand: Sendable {
 
       agent-gateway server [--vendor <vendor> --model <model>] [--acp-versions <1|2|1,2>] [options]
       agent-gateway client --vendor <vendor> --model <model> --prompt <text> [--acp-version <1|2>] [options] [-- <vendor-args>]
-      agent-gateway client --agent <path> --prompt <text> [--acp-version <1|2>] [-- <agent-args>]
+      agent-gateway client --agent <path> --prompt <text> [--acp-version <1|2>] [--permission <cancel|allow|reject>] [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
       agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <path>]
@@ -134,6 +134,8 @@ public struct AppCommand: Sendable {
     `client` speaks ACP v1 unless `--acp-version 2` requests v2 (falling
     back to v1 when the agent only speaks v1). In v2 the turn ends with an
     idle `state_update`, not with the session/prompt response.
+    `--permission <cancel|allow|reject>` sets how the client answers an
+    agent's session/request_permission (default cancel: decline).
     `client` spawns an ACP agent (this binary's server mode, or --agent) and
     echoes the agent's raw ACP JSONL messages to stdout. `--prompt -` reads
     the prompt text from stdin; repeatable `--image <path>` and
@@ -249,6 +251,13 @@ public struct AppCommand: Sendable {
       }
       protocolVersion = version
     }
+    var permissionPolicy = GatewayClientPermissionPolicy.cancel
+    if let value = options.permission {
+      guard let policy = GatewayClientPermissionPolicy(rawValue: value) else {
+        throw Error.missingValue("--permission")
+      }
+      permissionPolicy = policy
+    }
     let promptBlocksFromStdin = options.promptBlocksSource == "-"
     guard let prompt = options.prompt ?? (promptBlocksFromStdin ? "" : nil) else {
       throw Error.missingValue("--prompt")
@@ -262,7 +271,8 @@ public struct AppCommand: Sendable {
         promptBlocksFromStdin: promptBlocksFromStdin,
         agentExecutable: agent,
         agentArguments: vendorArguments,
-        protocolVersion: protocolVersion
+        protocolVersion: protocolVersion,
+        permissionPolicy: permissionPolicy
       )
     }
     guard let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) != nil else {
@@ -276,7 +286,8 @@ public struct AppCommand: Sendable {
       promptBlocksFromStdin: promptBlocksFromStdin,
       serverOptions: options.serverArguments(vendorArguments: vendorArguments),
       sessionMeta: options.sessionMeta(protocolVersion: protocolVersion),
-      protocolVersion: protocolVersion
+      protocolVersion: protocolVersion,
+      permissionPolicy: permissionPolicy
     )
   }
 
@@ -315,6 +326,7 @@ struct GatewayClientOptions: Equatable, Sendable {
   var pricing: String?
   var acpVersion: String?
   var acpVersions: String?
+  var permission: String?
 
   var usesImplicitCustomProvider: Bool {
     baseURL != nil
@@ -396,6 +408,7 @@ struct GatewayClientOptions: Equatable, Sendable {
     case "--agent": agentExecutable = value
     case "--acp-version": acpVersion = value
     case "--acp-versions": acpVersions = value
+    case "--permission": permission = value
     case "--provider-name": providerName = value
     case "--api-key-environment": apiKeyEnvironment = value
     case "--base-url": baseURL = value
