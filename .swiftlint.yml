@@ -40,3 +40,8 @@ identifier_name:
 
 force_try:
   severity: warning
+
+# Wire types nest their CodingKeys inside nested payload structs.
+nesting:
+  type_level:
+    warning: 2

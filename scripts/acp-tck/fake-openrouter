@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Loopback stand-in for the OpenRouter API (model list + streaming chat).
+
+Used by scripts/acp-tck.sh to exercise the API-vendor path, which
+advertises models as an ACP config option. Prints the port it listens on.
+A prompt containing SLOW streams for about 20 seconds.
+"""
+import json
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+MODELS = {"data": [{"id": "fake/model-a", "name": "Model A"}, {"id": "fake/model-b", "name": "Model B"}]}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps(MODELS).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        request = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+        slow = "SLOW" in request
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        try:
+            for _ in range(70 if slow else 1):
+                for word in ["Hello", " from", " the", " fake", " vendor", "."]:
+                    chunk = {"id": "gen-1", "choices": [{"delta": {"content": word}}]}
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                    self.wfile.flush()
+                    time.sleep(0.05 if slow else 0.005)
+            usage = {"id": "gen-1", "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 6}}
+            self.wfile.write(f"data: {json.dumps(usage)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+try:
+    server.serve_forever()
+except KeyboardInterrupt:
+    sys.exit(0)

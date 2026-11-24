@@ -62,11 +62,56 @@ settings have typed client flags such as `--cursor-repository-url`,
 stdout contains only ACP JSONL messages: `session/update` notifications
 (token streams as `agent_message_chunk`) followed by each request's response.
 For a persistent agent, start `agent-gateway server` and speak ACP over
-stdio; vendor and model come from server flags or from
-`_meta.agentGateway` on `session/new`. `--agent <path>` lets the client
+stdio; vendor and model come from server flags or from the gateway's
+`_meta` extension object on `session/new`. `--agent <path>` lets the client
 drive any external ACP agent. Vendor selection is explicit and is not
 inferred from the model. See `design-docs/specs/acp-stdio-protocol.md`
 for the protocol contract.
+
+### ACP protocol versions 1 and 2
+
+`agent-gateway server` speaks both ACP protocol versions on one endpoint.
+The client's `initialize` selects the version for the connection: a
+`protocolVersion: 1` request gets the v1 protocol, `protocolVersion: 2` (or
+any newer version) gets v2, and `--acp-versions 1` or `--acp-versions 2`
+restricts what the server offers (a client asking for a version below the
+offered ones gets error `-32022` with the supported list). The protocol
+implementation is written in Swift in this package's `ACP` target; no
+external ACP adapter is involved.
+
+`agent-gateway client` requests v1 by default and v2 with `--acp-version 2`
+(falling back to v1 when the agent selects it). ACP v2 is in Preview
+upstream, which is why it is opt-in for clients here.
+
+What changes for a host between the two versions:
+
+| | ACP v1 | ACP v2 |
+| --- | --- | --- |
+| Turn completion | `session/prompt` response with `stopReason` | idle `state_update` with `stopReason`; the prompt response only returns the inserted message's `messageId` |
+| Vendor failure during a turn | error response to `session/prompt` | idle `state_update` with `stopReason: "error"` and `error` |
+| Cancellation confirmed by | prompt response `stopReason: "cancelled"` | idle `state_update` with `stopReason: "cancelled"` |
+| Prompt while a turn runs | rejected (`-32600`) | held and inserted, in order, when the running work ends |
+| Gateway `_meta` extension key | `agentGateway` | `io.github.tacogips/agentGateway` |
+| Execution details (`resultText`, `usage`, `vendorSessionId`) | on the prompt response `_meta` | on the idle `state_update` `_meta` |
+| Capabilities | `agentCapabilities` with booleans | `capabilities.session` with object markers |
+
+Both versions support `session/list`, `session/resume`, `session/close`,
+`session/delete`, history replay (`session/load` in v1, `session/resume`
+with `replayFrom: {"type": "start"}` in v2), the standard `systemPrompt`
+parameter in `append` mode, and model selection through the `model` config
+option (`session/set_config_option`) for vendors that can list models.
+Sessions and their history live in the server process: they can be listed,
+closed, and resumed for as long as that process runs.
+
+Conformance is checked with the upstream
+[ACP Test Compatibility Kit](https://github.com/agentclientprotocol/acp-tck)
+against deterministic fake vendors:
+
+```bash
+scripts/acp-tck.sh --protocol-version 1
+scripts/acp-tck.sh --protocol-version 2
+scripts/acp-tck.sh --protocol-version 2 --vendor-mode api   # also exercises config options
+```
 
 ## ACP client library: streaming or aggregated
 
@@ -102,6 +147,45 @@ for try await event in client.promptStream(request) {
 let result = try await client.promptCollecting(request)
 print(result.messageText, result.thoughtText, result.response.stopReason)
 ```
+
+The same library speaks ACP v2. Host both versions and let the client
+negotiate; `negotiate` requests v2 and reports which version the agent
+selected, so one client works against v1-only and v2 agents:
+
+```swift
+let agent = GatewayACPAgent(defaults: GatewayAgentDefaults(vendor: .claudeCode, model: "claude-sonnet-5"))
+let (client, server) = await ACPClientConnection.inProcess(v1: agent, v2: agent)
+
+let negotiated = try await client.negotiate(
+  ACPV2InitializeRequest(info: ACPImplementation(name: "my-host", version: "1.0"))
+)
+guard case .v2 = negotiated else { /* the agent selected v1: use the v1 API above */ return }
+
+let session = try await client.newSessionV2(ACPV2NewSessionRequest(cwd: "/work"))
+let request = ACPV2PromptRequest(sessionId: session.sessionId, prompt: [.text("hi")])
+
+// In v2 the prompt response only acknowledges insertion. `promptTurn`
+// follows the session's updates to the idle state that ends the work.
+for try await event in client.promptTurn(request) {
+  switch event {
+  case .accepted(let response): print("inserted", response.messageId)
+  case .update(.agentMessageChunk(let chunk)): print(chunk.messageId, chunk.content)
+  case .finished(let state): print(state.stopReason ?? "no stop reason", state.error as Any)
+  default: break
+  }
+}
+
+// Or aggregated; a vendor failure is `stopReason == .error`, not a throw.
+let turn = try await client.promptTurnCollecting(request)
+print(turn.messageText, turn.stopReason as Any, gatewayACPMeta(turn.finalState.meta) as Any)
+```
+
+v2 updates are upserts keyed by entity id: `ACPPatch` models the three
+states of a patch field (omitted, `null`, value), whole-message updates
+replace what chunks accumulated, and unknown update, content, and enum
+variants are preserved as raw JSON instead of failing to decode. Agents
+implement `ACPV2Agent` next to `ACPAgent`, and
+`ACPAgentServer(v1:v2:transport:)` serves both on one connection.
 
 `ACPClientConnection(transport:delegate:)` connects the same API to any
 external ACP agent over stdio pipes (`ACPFileHandleTransport`).
@@ -218,12 +302,18 @@ let catalog = try await ProductionGatewayExecutor().models(
 )
 ```
 
-API-vendor ACP sessions also advertise the list in the `session/new`
-response's standard `models` field (`availableModels` / `currentModelId`),
-and `session/set_model` (`ACPClientConnection.setModel(sessionId:modelId:)`)
-switches the model for subsequent prompts. CLI vendors (claude-code, codex,
-cursor) have no machine-readable model enumeration and return an explicit
-unsupported error instead of a guessed list.
+API-vendor ACP sessions also advertise the list as the standard `model`
+config option in the `session/new` response (`configOptions`, category
+`model`), and `session/set_config_option`
+(`ACPClientConnection.setConfigOption` in v1, `setConfigOptionV2` in v2)
+switches the model for subsequent prompts; values outside the advertised
+list are rejected with `-32602`. The earlier `session/set_model` request
+still works on v1 connections and accepts any pass-through model id, but
+the root-level `models` response field it paired with is gone: it is not
+part of the ACP schema. CLI vendors (claude-code, codex, cursor) have no
+machine-readable model enumeration, advertise no config option, and the
+`models` command returns an explicit unsupported error instead of a
+guessed list.
 
 ### Model pricing
 

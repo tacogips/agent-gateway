@@ -24,6 +24,9 @@ public struct GatewayACPClientOptions: Sendable {
   public var agentArguments: [String]
   public var serverOptions: [String]
   public var sessionMeta: ACPJSONValue?
+  /// ACP protocol version to request. Version 2 falls back to version 1
+  /// when the agent selects it.
+  public var protocolVersion: Int
 
   public init(
     prompt: String,
@@ -33,7 +36,8 @@ public struct GatewayACPClientOptions: Sendable {
     agentExecutable: String? = nil,
     agentArguments: [String] = [],
     serverOptions: [String] = [],
-    sessionMeta: ACPJSONValue? = nil
+    sessionMeta: ACPJSONValue? = nil,
+    protocolVersion: Int = ACPProtocol.versionV1
   ) {
     self.prompt = prompt
     self.cwd = cwd
@@ -43,6 +47,7 @@ public struct GatewayACPClientOptions: Sendable {
     self.agentArguments = agentArguments
     self.serverOptions = serverOptions
     self.sessionMeta = sessionMeta
+    self.protocolVersion = protocolVersion
   }
 }
 
@@ -91,20 +96,10 @@ public struct GatewayACPClientRunner: Sendable {
 
     do {
       let prompt = try promptBlocks(options)
-      _ = try await client.initialize(
-        ACPInitializeRequest(
-          clientInfo: ACPImplementation(name: "agent-gateway-client", version: Version.current)
-        )
-      )
-      let session = try await client.newSession(
-        ACPNewSessionRequest(cwd: options.cwd, mcpServers: [], meta: options.sessionMeta)
-      )
-      let response = try await client.prompt(
-        ACPPromptRequest(sessionId: session.sessionId, prompt: prompt)
-      )
+      let succeeded = try await runTurn(client: client, options: options, prompt: prompt)
       await client.stop()
       process.waitUntilExit()
-      return response.stopReason == .endTurn ? 0 : 1
+      return succeeded ? 0 : 1
     } catch {
       await client.stop()
       if process.isRunning { process.terminate() }
@@ -119,6 +114,41 @@ public struct GatewayACPClientRunner: Sendable {
     throw GatewayProcessError.launchFailed(ENOTSUP)
     #endif
   }
+}
+
+/// Runs initialize → session/new → one prompt turn in the requested
+/// protocol version. Returns whether the turn ended with `end_turn`.
+private func runTurn(
+  client: ACPClientConnection, options: GatewayACPClientOptions, prompt: [ACPContentBlock]
+) async throws -> Bool {
+  let info = ACPImplementation(name: "agent-gateway-client", version: Version.current)
+  if options.protocolVersion >= ACPProtocol.versionV2 {
+    let negotiated = try await client.negotiate(
+      ACPV2InitializeRequest(info: info), v1Fallback: ACPInitializeRequest(clientInfo: info)
+    )
+    if case .v2 = negotiated {
+      let session = try await client.newSessionV2(
+        ACPV2NewSessionRequest(cwd: options.cwd, meta: options.sessionMeta)
+      )
+      // In v2 the prompt response only acknowledges insertion; the turn
+      // ends with the idle state update that carries the stop reason.
+      let turn = try await client.promptTurnCollecting(
+        ACPV2PromptRequest(sessionId: session.sessionId, prompt: prompt)
+      )
+      if turn.stopReason == .error, let error = turn.finalState.error {
+        FileHandle.standardError.write(Data("agent error \(error.code): \(error.message)\n".utf8))
+      }
+      return turn.stopReason == .endTurn
+    }
+    // The agent selected v1: continue with the v1 lifecycle below.
+  } else {
+    _ = try await client.initialize(ACPInitializeRequest(clientInfo: info))
+  }
+  let session = try await client.newSession(
+    ACPNewSessionRequest(cwd: options.cwd, mcpServers: [], meta: options.sessionMeta)
+  )
+  let response = try await client.prompt(ACPPromptRequest(sessionId: session.sessionId, prompt: prompt))
+  return response.stopReason == .endTurn
 }
 
 private func promptBlocks(_ options: GatewayACPClientOptions) throws -> [ACPContentBlock] {

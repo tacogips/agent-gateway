@@ -63,7 +63,7 @@ It mirrors `GatewayModelListing` in `GatewayModelCatalog.swift`:
 `-32040` and `-32041` do not appear anywhere in `Sources/`. These codes are
 already taken, so subscription usage must not reuse them:
 
-- `-32000`, `-32002`, `-32010` and `-32011`: general and vendor errors.
+- `-32000`, `-32010`, `-32011` and `-32012`: general and vendor errors.
 - `-32020`: model listing (unsupported vendor).
 - `-32021`: transcription (unsupported vendor).
 - `-32030` and `-32031`: decide. The OpenRouter decision transport failure

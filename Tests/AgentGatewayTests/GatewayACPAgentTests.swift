@@ -195,18 +195,30 @@ private func makeConnectedGateway(
   )
   _ = try await client.initialize()
   let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
-  let models = try #require(session.models)
-  #expect(models.currentModelId == "gpt-5")
-  #expect(models.availableModels.map(\.modelId) == ["gpt-5", "gpt-5-mini"])
-  #expect(models.availableModels[1].name == "GPT-5 mini")
+  // Models are advertised as the standard `model` config option; the
+  // legacy root-level `models` field is not part of the v1 schema.
+  #expect(session.models == nil)
+  let option = try #require(session.configOptions?.first?.option)
+  #expect(option.configId == "model")
+  #expect(option.kind == .select(currentValue: "gpt-5", options: .ungrouped([
+    .init(value: "gpt-5", name: "gpt-5"), .init(value: "gpt-5-mini", name: "GPT-5 mini")
+  ])))
 
   try await client.setModel(sessionId: session.sessionId, modelId: "gpt-5-mini")
   _ = try await client.prompt(ACPPromptRequest(sessionId: session.sessionId, prompt: [.text("hi")]))
   #expect(await executor.promptedModels == ["gpt-5-mini"])
 
+  // The standard config option switches the model too.
+  let updated = try await client.setConfigOption(
+    sessionId: session.sessionId, configId: "model", value: .id("gpt-5")
+  )
+  #expect(updated.first?.kind == .select(currentValue: "gpt-5", options: .ungrouped([
+    .init(value: "gpt-5", name: "gpt-5"), .init(value: "gpt-5-mini", name: "GPT-5 mini")
+  ])))
+
   // A second session reuses the cached model list instead of re-fetching.
   let second = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
-  #expect(second.models?.currentModelId == "gpt-5")
+  #expect(second.configOptions?.count == 1)
   #expect(await executor.listCalls == 1)
 
   await #expect(throws: ACPError.self) {
@@ -223,6 +235,7 @@ private func makeConnectedGateway(
   _ = try await client.initialize()
   let session = try await client.newSession(ACPNewSessionRequest(cwd: "/tmp"))
   #expect(session.models == nil)
+  #expect(session.configOptions == nil)
   await client.stop()
 }
 
@@ -261,7 +274,7 @@ private func makeConnectedGateway(
   await client.stop()
 }
 
-@Test func promptForUnknownSessionFailsWithInvalidParams() async throws {
+@Test func promptForUnknownSessionFailsWithResourceNotFound() async throws {
   let executor = ScriptedExecutor(steps: [], resultText: "")
   let (client, _) = await makeConnectedGateway(executor: executor)
   _ = try await client.initialize()
@@ -269,7 +282,8 @@ private func makeConnectedGateway(
     _ = try await client.prompt(ACPPromptRequest(sessionId: "missing", prompt: [.text("hi")]))
     Issue.record("expected an error for the unknown session")
   } catch let error as ACPError {
-    #expect(error.code == -32602)
+    #expect(error.code == ACPErrorCode.resourceNotFound)
+    #expect(error.data?["sessionId"]?.stringValue == "missing")
   }
   await client.stop()
 }

@@ -3,8 +3,8 @@ import AgentGateway
 import Foundation
 
 /// Default execution configuration for ACP sessions. Values can be overridden
-/// per session through the spec's `meta` extension point under the
-/// `agentGateway` key of `session/new`.
+/// per session through the spec's `_meta` extension point of `session/new`,
+/// under the gateway's extension key (`GatewayACPMetaKey`).
 public struct GatewayAgentDefaults: Equatable, Sendable {
   public var vendor: GatewayVendor?
   public var model: String?
@@ -42,7 +42,7 @@ public struct GatewayAgentDefaults: Equatable, Sendable {
   }
 
   func merging(meta: ACPJSONValue?) -> GatewayAgentDefaults {
-    guard let overrides = meta?["agentGateway"]?.objectValue else { return self }
+    guard let overrides = gatewayACPMeta(meta)?.objectValue else { return self }
     var merged = self
     if let value = overrides["vendor"]?.stringValue {
       merged.vendor = GatewayVendor(rawValue: value)
@@ -63,18 +63,16 @@ public struct GatewayAgentDefaults: Equatable, Sendable {
 
 /// ACP-compliant agent that routes prompt turns to AI vendor backends
 /// (CLI agents and HTTP APIs) through `GatewayExecuting`.
+///
+/// The agent speaks both ACP protocol versions: it conforms to `ACPAgent`
+/// (v1, in this file) and `ACPV2Agent` (v2, in `GatewayACPAgent+V2.swift`)
+/// over one shared session table, so `ACPAgentServer(v1:v2:transport:)`
+/// can serve either version from the same instance. One instance serves
+/// one connection.
 public actor GatewayACPAgent: ACPAgent {
-  private struct SessionState {
-    var cwd: String
-    var configuration: GatewayAgentDefaults
-    var vendorSessionId: String?
-    var activeTask: Task<GatewayExecuteResult, any Error>?
-    var cancelRequested = false
-  }
-
-  private let executor: any GatewayExecuting
-  private let defaults: GatewayAgentDefaults
-  private var sessions: [String: SessionState] = [:]
+  let executor: any GatewayExecuting
+  let defaults: GatewayAgentDefaults
+  var sessions: [String: GatewaySession] = [:]
   /// Vendor model lists fetched for `session/new`, keyed by
   /// vendor/baseURL/credential so repeated sessions skip the network.
   private var modelListCache: [String: [ACPModelInfo]] = [:]
@@ -87,25 +85,17 @@ public actor GatewayACPAgent: ACPAgent {
     self.executor = executor
   }
 
-  public func initialize(_ request: ACPInitializeRequest) async throws -> ACPInitializeResponse {
-    ACPInitializeResponse(
-      protocolVersion: min(request.protocolVersion, ACPProtocol.versionV1),
-      agentCapabilities: ACPAgentCapabilities(
-        loadSession: false,
-        promptCapabilities: ACPPromptCapabilities(image: true, audio: false, embeddedContext: true)
-      ),
-      agentInfo: ACPImplementation(name: "agent-gateway", version: Version.current)
-    )
-  }
+  // MARK: - Shared session logic
 
-  public func newSession(
-    _ request: ACPNewSessionRequest, connection: ACPAgentSideConnection
-  ) async throws -> ACPNewSessionResponse {
-    guard request.cwd.hasPrefix("/") else {
+  /// Validates and stores a new session; shared by both protocol versions.
+  func createSession(
+    cwd: String, meta: ACPJSONValue?, systemPrompt: ACPSystemPrompt?, connection: ACPAgentSideConnection?
+  ) async throws -> GatewaySession {
+    guard cwd.hasPrefix("/") else {
       throw ACPError.invalidParams("cwd must be an absolute path")
     }
-    let configuration = defaults.merging(meta: request.meta)
-    guard let vendor = configuration.vendor else {
+    let configuration = defaults.merging(meta: meta)
+    guard configuration.vendor != nil else {
       throw ACPError.invalidParams(
         "no vendor configured; start the agent with --vendor or pass _meta.agentGateway.vendor"
       )
@@ -115,50 +105,113 @@ public actor GatewayACPAgent: ACPAgent {
         "no model configured; start the agent with --model or pass _meta.agentGateway.model"
       )
     }
-    let sessionId = "sess-" + UUID().uuidString.lowercased()
-    sessions[sessionId] = SessionState(
-      cwd: request.cwd,
+    let clientSystemPrompt = try gatewaySystemPromptText(systemPrompt)
+    var session = GatewaySession(
+      sessionId: "sess-" + UUID().uuidString.lowercased(),
+      cwd: cwd,
       configuration: configuration,
-      vendorSessionId: request.meta?["agentGateway"]?["vendorSessionId"]?.stringValue
+      clientSystemPrompt: clientSystemPrompt,
+      vendorSessionId: gatewayACPMeta(meta)?["vendorSessionId"]?.stringValue,
+      updatedAt: Date()
     )
-    return ACPNewSessionResponse(
-      sessionId: sessionId,
-      models: await sessionModels(for: configuration),
-      meta: .object([
-        "agentGateway": .object([
-          "vendor": .string(vendor.rawValue),
-          "model": .string(configuration.model ?? "")
-        ])
-      ])
+    session.connection = connection
+    session.availableModels = await availableModels(for: configuration)
+    sessions[session.sessionId] = session
+    return session
+  }
+
+  /// The session when it is active on the connection; otherwise the
+  /// `-32002` error that names it.
+  func activeSession(_ sessionId: ACPSessionID) throws -> GatewaySession {
+    guard let session = sessions[sessionId], session.isActive else {
+      throw ACPError.sessionNotFound(sessionId)
+    }
+    return session
+  }
+
+  /// Reattaches a stored session to the connection; shared by v1
+  /// `session/load`/`session/resume` and v2 `session/resume`.
+  func reactivateSession(
+    _ sessionId: ACPSessionID, cwd: String, systemPrompt: ACPSystemPrompt?,
+    connection: ACPAgentSideConnection?
+  ) throws -> GatewaySession {
+    guard var session = sessions[sessionId] else {
+      throw ACPError.sessionNotFound(sessionId)
+    }
+    guard cwd.hasPrefix("/") else {
+      throw ACPError.invalidParams("cwd must be an absolute path")
+    }
+    guard gatewayNormalizedPath(cwd) == gatewayNormalizedPath(session.cwd) else {
+      throw ACPError.invalidParams("cwd does not match the session's working directory")
+    }
+    if let text = try gatewaySystemPromptText(systemPrompt) {
+      session.clientSystemPrompt = text
+    }
+    session.isActive = true
+    session.isClosing = false
+    session.connection = connection
+    sessions[sessionId] = session
+    return session
+  }
+
+  func sessionList(_ request: ACPListSessionsRequest) throws -> ACPListSessionsResponse {
+    if let cwd = request.cwd, !cwd.hasPrefix("/") {
+      throw ACPError.invalidParams("cwd must be an absolute path")
+    }
+    var offset = 0
+    if let cursor = request.cursor {
+      guard let decoded = gatewaySessionListOffset(cursor) else {
+        throw ACPError.invalidParams("invalid session/list cursor")
+      }
+      offset = decoded
+    }
+    let filter = request.cwd.map(gatewayNormalizedPath)
+    let matching = sessions.values
+      .filter { filter == nil || gatewayNormalizedPath($0.cwd) == filter }
+      .sorted { ($0.updatedAt, $0.sessionId) > ($1.updatedAt, $1.sessionId) }
+    guard offset <= matching.count else {
+      throw ACPError.invalidParams("invalid session/list cursor")
+    }
+    let page = matching.dropFirst(offset).prefix(gatewaySessionListPageSize)
+    let next = offset + page.count
+    return ACPListSessionsResponse(
+      sessions: page.map(\.info),
+      nextCursor: next < matching.count ? gatewaySessionListCursor(next) : nil
     )
   }
 
-  public func setModel(_ request: ACPSetSessionModelRequest) async throws {
-    guard sessions[request.sessionId] != nil else {
-      throw ACPError.invalidParams("unknown session '\(request.sessionId)'")
+  /// Applies `session/set_config_option`; returns the complete option list.
+  func applyConfigOption(_ request: ACPSetSessionConfigOptionRequest) throws -> [ACPSessionConfigOption] {
+    var session = try activeSession(request.sessionId)
+    let options = session.configOptions
+    guard let option = options.first(where: { $0.configId == request.configId }),
+          case .select(_, let choices) = option.kind else {
+      throw ACPError.invalidParams("unknown config option '\(request.configId)'")
     }
-    guard !request.modelId.isEmpty else {
-      throw ACPError.invalidParams("modelId must not be empty")
+    guard case .id(let value) = request.value else {
+      throw ACPError.invalidParams("config option '\(request.configId)' takes an option id")
     }
-    // Model ids are pass-through vendor strings, so ids outside the
-    // advertised list are accepted; the vendor validates at prompt time.
-    sessions[request.sessionId]?.configuration.model = request.modelId
+    guard choices.all.contains(where: { $0.value == value }) else {
+      throw ACPError.invalidParams("unknown value '\(value)' for config option '\(request.configId)'")
+    }
+    session.configuration.model = value
+    sessions[request.sessionId] = session
+    return session.configOptions
   }
 
-  /// Best-effort ACP model advertisement for `session/new`. Only vendors
-  /// with a listing endpoint participate; failures and slow responses
-  /// (over 3 seconds) degrade to no advertisement instead of failing or
-  /// stalling session creation. Successful lists are cached per
+  /// Best-effort model advertisement for `session/new`. Only vendors with
+  /// a listing endpoint participate; failures and slow responses (over 3
+  /// seconds) degrade to no advertisement instead of failing or stalling
+  /// session creation. Successful lists are cached per
   /// vendor/baseURL/credential.
-  private func sessionModels(for configuration: GatewayAgentDefaults) async -> ACPSessionModelState? {
-    guard let vendor = configuration.vendor, !vendor.isCLI,
-          let currentModel = configuration.model,
-          let listing = executor as? any GatewayModelListing else { return nil }
+  private func availableModels(for configuration: GatewayAgentDefaults) async -> [ACPModelInfo] {
+    guard let vendor = configuration.vendor, !vendor.isCLI, configuration.model != nil,
+          let listing = executor as? any GatewayModelListing else { return [] }
     let cacheKey = [
       vendor.rawValue, configuration.baseURL ?? "", configuration.apiKeyEnvironment ?? ""
     ].joined(separator: "|")
     if let cached = modelListCache[cacheKey] {
-      return ACPSessionModelState(availableModels: cached, currentModelId: currentModel)
+      return cached
     }
     let params = GatewayModelCatalogParams(
       vendor: vendor,
@@ -175,33 +228,185 @@ public actor GatewayACPAgent: ACPAgent {
       group.cancelAll()
       return first
     }
-    guard let result, !result.models.isEmpty else { return nil }
+    guard let result, !result.models.isEmpty else { return [] }
     let models = result.models.map {
       ACPModelInfo(modelId: $0.modelId, name: $0.name ?? $0.modelId, description: $0.description)
     }
     modelListCache[cacheKey] = models
-    return ACPSessionModelState(availableModels: models, currentModelId: currentModel)
+    return models
+  }
+
+  func executeParams(for session: GatewaySession, input: GatewayPromptInput) throws -> GatewayExecuteParams {
+    let configuration = session.configuration
+    guard let vendor = configuration.vendor, let model = configuration.model else {
+      throw ACPError.invalidParams("session has no vendor/model configuration")
+    }
+    return GatewayExecuteParams(
+      vendor: vendor,
+      model: model,
+      prompt: input.text,
+      systemPrompt: session.effectiveSystemPrompt,
+      workingDirectory: session.cwd,
+      executable: configuration.executable,
+      arguments: configuration.arguments,
+      providerName: configuration.providerName,
+      apiKeyEnvironment: configuration.apiKeyEnvironment,
+      baseURL: configuration.baseURL,
+      maxTokens: configuration.maxTokens,
+      sessionMode: session.vendorSessionId == nil ? .new : .reuse,
+      sessionId: session.vendorSessionId,
+      cursorAPI: configuration.cursorAPI,
+      images: input.images
+    )
+  }
+
+  func sessionMeta(_ session: GatewaySession, key: String) -> ACPJSONValue {
+    .object([
+      key: .object([
+        "vendor": .string(session.configuration.vendor?.rawValue ?? ""),
+        "model": .string(session.configuration.model ?? "")
+      ])
+    ])
+  }
+
+  // MARK: - ACP v1
+
+  public func initialize(_ request: ACPInitializeRequest) async throws -> ACPInitializeResponse {
+    ACPInitializeResponse(
+      protocolVersion: min(request.protocolVersion, ACPProtocol.versionV1),
+      agentCapabilities: ACPAgentCapabilities(
+        loadSession: true,
+        promptCapabilities: ACPPromptCapabilities(image: true, audio: false, embeddedContext: true),
+        sessionCapabilities: ACPSessionCapabilities(
+          list: ACPSupportMarker(),
+          resume: ACPSupportMarker(),
+          close: ACPSupportMarker(),
+          delete: ACPSupportMarker(),
+          systemPrompt: ACPSystemPromptCapabilities()
+        )
+      ),
+      agentInfo: ACPImplementation(name: "agent-gateway", version: Version.current, title: "Agent Gateway")
+    )
+  }
+
+  public func newSession(
+    _ request: ACPNewSessionRequest, connection: ACPAgentSideConnection
+  ) async throws -> ACPNewSessionResponse {
+    let session = try await createSession(
+      cwd: request.cwd, meta: request.meta, systemPrompt: request.systemPrompt, connection: nil
+    )
+    return ACPNewSessionResponse(
+      sessionId: session.sessionId,
+      // Models are advertised as the standard `model` config option. The
+      // former root-level `models` field is not part of the v1 schema.
+      configOptions: v1ConfigOptions(session),
+      meta: sessionMeta(session, key: GatewayACPMetaKey.v1)
+    )
+  }
+
+  private func v1ConfigOptions(_ session: GatewaySession) -> [ACPSessionConfigOption.V1Coding]? {
+    let options = session.configOptions
+    return options.isEmpty ? nil : options.map(ACPSessionConfigOption.V1Coding.init)
+  }
+
+  /// `session/load`: reattaches the session and replays its retained
+  /// history as message chunks before responding.
+  public func loadSession(
+    _ request: ACPLoadSessionRequest, connection: ACPAgentSideConnection
+  ) async throws -> ACPLoadSessionResponse {
+    let session = try reactivateSession(
+      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt, connection: nil
+    )
+    for message in session.history {
+      for block in message.content {
+        let update: ACPSessionUpdate
+        switch message.role {
+        case .user: update = .userMessageChunk(block)
+        case .agent: update = .agentMessageChunk(block)
+        case .thought: update = .agentThoughtChunk(block)
+        }
+        await connection.sendUpdate(ACPSessionNotification(sessionId: session.sessionId, update: update))
+      }
+    }
+    return ACPLoadSessionResponse(configOptions: v1ConfigOptions(session))
+  }
+
+  /// `session/resume`: reattaches the session without replaying history.
+  public func resumeSession(
+    _ request: ACPLoadSessionRequest, connection: ACPAgentSideConnection
+  ) async throws -> ACPLoadSessionResponse {
+    let session = try reactivateSession(
+      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt, connection: nil
+    )
+    return ACPLoadSessionResponse(configOptions: v1ConfigOptions(session))
+  }
+
+  public func listSessions(_ request: ACPListSessionsRequest) async throws -> ACPListSessionsResponse {
+    try sessionList(request)
+  }
+
+  /// `session/close`: cancels an in-flight prompt and ends the session on
+  /// the connection. Idempotent: unknown and closed sessions succeed.
+  public func closeSession(_ request: ACPSessionRequest) async throws {
+    guard sessions[request.sessionId] != nil else { return }
+    sessions[request.sessionId]?.cancelRequested = true
+    sessions[request.sessionId]?.activeTask?.cancel()
+    sessions[request.sessionId]?.isActive = false
+  }
+
+  public func deleteSession(_ request: ACPSessionRequest) async throws {
+    try await closeSession(request)
+    sessions[request.sessionId] = nil
+  }
+
+  public func setConfigOption(
+    _ request: ACPSetSessionConfigOptionRequest
+  ) async throws -> ACPSetSessionConfigOptionResponse.V1Coding {
+    ACPSetSessionConfigOptionResponse(configOptions: try applyConfigOption(request)).v1
+  }
+
+  public func setModel(_ request: ACPSetSessionModelRequest) async throws {
+    _ = try activeSession(request.sessionId)
+    guard !request.modelId.isEmpty else {
+      throw ACPError.invalidParams("modelId must not be empty")
+    }
+    // Model ids are pass-through vendor strings, so ids outside the
+    // advertised list are accepted; the vendor validates at prompt time.
+    sessions[request.sessionId]?.configuration.model = request.modelId
   }
 
   public func prompt(
     _ request: ACPPromptRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPPromptResponse {
-    guard let session = sessions[request.sessionId] else {
-      throw ACPError.invalidParams("unknown session '\(request.sessionId)'")
-    }
+    let session = try activeSession(request.sessionId)
     guard session.activeTask == nil else {
       throw ACPError.invalidRequest("session '\(request.sessionId)' already has a prompt in flight")
     }
-    let params = try executeParams(for: session, prompt: request.prompt)
+    let params = try executeParams(for: session, input: try gatewayPromptInput(request.prompt))
     sessions[request.sessionId]?.cancelRequested = false
+    sessions[request.sessionId]?.retain(
+      GatewayHistoryMessage(role: .user, messageId: gatewayNewMessageId(), content: request.prompt)
+    )
 
-    // Updates are pumped through an AsyncStream so the synchronous vendor
-    // emitter preserves token order while the actor sends them sequentially.
-    let (stream, continuation) = AsyncStream.makeStream(of: ACPSessionUpdate.self)
-    let pump = Task {
-      for await update in stream {
+    // Chunks are pumped through an AsyncStream so the synchronous vendor
+    // emitter preserves token order while they are sent sequentially.
+    let (stream, continuation) = AsyncStream.makeStream(of: GatewayStreamChunk.self)
+    let pump = Task { () -> (message: String, thought: String) in
+      var message = ""
+      var thought = ""
+      for await chunk in stream {
+        let update: ACPSessionUpdate
+        switch chunk {
+        case .message(let text):
+          message += text
+          update = .agentMessageChunk(.text(text))
+        case .thought(let text):
+          thought += text
+          update = .agentThoughtChunk(.text(text))
+        }
         await connection.sendUpdate(ACPSessionNotification(sessionId: request.sessionId, update: update))
       }
+      return (message, thought)
     }
     let bridge = GatewayACPStreamBridge { continuation.yield($0) }
     let executor = executor
@@ -214,24 +419,49 @@ public actor GatewayACPAgent: ACPAgent {
       task.cancel()
     }
 
+    let outcome: Result<GatewayExecuteResult, any Error>
     do {
-      let result = try await task.value
-      continuation.finish()
-      await pump.value
+      // `$/cancel_request` for this prompt cancels the calling task; treat
+      // it like session/cancel so the turn still ends with one response.
+      outcome = .success(try await withTaskCancellationHandler {
+        try await task.value
+      } onCancel: {
+        task.cancel()
+      })
+    } catch {
+      outcome = .failure(error)
+    }
+    continuation.finish()
+    let streamed = await pump.value
+    retainOutput(sessionId: request.sessionId, thought: streamed.thought, message: streamed.message)
+    switch outcome {
+    case .success(let result):
       if let vendorSessionId = result.sessionId {
         sessions[request.sessionId]?.vendorSessionId = vendorSessionId
       }
-      return ACPPromptResponse(stopReason: .endTurn, meta: resultMeta(result))
-    } catch {
-      continuation.finish()
-      await pump.value
-      if sessions[request.sessionId]?.cancelRequested == true || error is CancellationError {
+      return ACPPromptResponse(stopReason: .endTurn, meta: gatewayResultMeta(result, key: GatewayACPMetaKey.v1))
+    case .failure(let error):
+      if sessions[request.sessionId]?.cancelRequested == true || error is CancellationError || Task.isCancelled {
         return ACPPromptResponse(stopReason: .cancelled)
       }
-      if let gatewayError = error as? GatewayRPCError {
-        throw ACPError(code: gatewayError.code, message: gatewayError.message)
-      }
-      throw ACPError.internalError(String(describing: error))
+      throw gatewayACPError(error)
+    }
+  }
+
+  /// Retains the output of a finished turn for history replay.
+  func retainOutput(
+    sessionId: ACPSessionID, thought: String, message: String,
+    thoughtMessageId: ACPMessageID = gatewayNewMessageId(), agentMessageId: ACPMessageID = gatewayNewMessageId()
+  ) {
+    if !thought.isEmpty {
+      sessions[sessionId]?.retain(
+        GatewayHistoryMessage(role: .thought, messageId: thoughtMessageId, content: [.text(thought)])
+      )
+    }
+    if !message.isEmpty {
+      sessions[sessionId]?.retain(
+        GatewayHistoryMessage(role: .agent, messageId: agentMessageId, content: [.text(message)])
+      )
     }
   }
 
@@ -239,124 +469,19 @@ public actor GatewayACPAgent: ACPAgent {
     sessions[notification.sessionId]?.cancelRequested = true
     sessions[notification.sessionId]?.activeTask?.cancel()
   }
-
-  private func executeParams(
-    for session: SessionState, prompt blocks: [ACPContentBlock]
-  ) throws -> GatewayExecuteParams {
-    let configuration = session.configuration
-    guard let vendor = configuration.vendor, let model = configuration.model else {
-      throw ACPError.invalidParams("session has no vendor/model configuration")
-    }
-    var textParts: [String] = []
-    var images: [GatewayImageInput] = []
-    for block in blocks {
-      switch block {
-      case .text(let content):
-        textParts.append(content.text)
-      case .image(let content):
-        images.append(GatewayImageInput(dataBase64: content.data, mimeType: content.mimeType))
-      case .resourceLink(let link):
-        textParts.append(link.uri)
-      case .resource(let embedded):
-        if let text = embedded.resource.text {
-          textParts.append(text)
-        } else {
-          throw ACPError.invalidParams("binary embedded resources are not supported")
-        }
-      case .audio:
-        throw ACPError.invalidParams("audio content is not supported")
-      }
-    }
-    guard !textParts.isEmpty || !images.isEmpty else {
-      throw ACPError.invalidParams("prompt must contain at least one supported content block")
-    }
-    return GatewayExecuteParams(
-      vendor: vendor,
-      model: model,
-      prompt: textParts.joined(separator: "\n\n"),
-      systemPrompt: configuration.systemPrompt,
-      workingDirectory: session.cwd,
-      executable: configuration.executable,
-      arguments: configuration.arguments,
-      providerName: configuration.providerName,
-      apiKeyEnvironment: configuration.apiKeyEnvironment,
-      baseURL: configuration.baseURL,
-      maxTokens: configuration.maxTokens,
-      sessionMode: session.vendorSessionId == nil ? .new : .reuse,
-      sessionId: session.vendorSessionId,
-      cursorAPI: configuration.cursorAPI,
-      images: images
-    )
-  }
-
-  private func resultMeta(_ result: GatewayExecuteResult) -> ACPJSONValue {
-    var gateway: [String: ACPJSONValue] = [
-      "vendor": .string(result.vendor.rawValue),
-      "model": .string(result.model),
-      // The vendor's authoritative final text. Streamed chunks may span
-      // multiple assistant messages; hosts that need exactly the vendor's
-      // final result (e.g. for output contracts) should prefer this value.
-      "resultText": .string(result.text)
-    ]
-    if let sessionId = result.sessionId {
-      gateway["vendorSessionId"] = .string(sessionId)
-    }
-    if let usage = result.usage {
-      var tokens: [String: ACPJSONValue] = [:]
-      if let input = usage.inputTokens { tokens["inputTokens"] = .integer(input) }
-      if let output = usage.outputTokens { tokens["outputTokens"] = .integer(output) }
-      if let total = usage.totalTokens { tokens["totalTokens"] = .integer(total) }
-      gateway["usage"] = .object(tokens)
-    }
-    return .object(["agentGateway": .object(gateway)])
-  }
 }
 
-/// Converts gateway emitter callbacks into ordered ACP session updates.
-///
-/// Streaming vendors produce token deltas that map 1:1 to
-/// `agent_message_chunk`. Non-streaming vendors produce whole-message
-/// snapshots; those are de-duplicated so a final echo of already-streamed
-/// text (e.g. Claude Code's `result` event or cursor-agent's `result`
-/// after deltas) is not emitted twice.
-final class GatewayACPStreamBridge: @unchecked Sendable {
-  private let lock = NSLock()
-  private let yield: @Sendable (ACPSessionUpdate) -> Void
-  private var accumulated = ""
+/// Opaque `session/list` cursor for a result offset.
+func gatewaySessionListCursor(_ offset: Int) -> String {
+  Data("offset:\(offset)".utf8).base64EncodedString()
+}
 
-  init(yield: @escaping @Sendable (ACPSessionUpdate) -> Void) {
-    self.yield = yield
-  }
-
-  var emitter: GatewayEventEmitter {
-    { [self] event in consume(event) }
-  }
-
-  func consume(_ event: GatewayEvent) {
-    lock.withLock {
-      switch event.channel {
-      case .assistant:
-        if let delta = event.textDelta, !delta.isEmpty {
-          accumulated += delta
-          yield(.agentMessageChunk(.text(delta)))
-        } else if let snapshot = event.textSnapshot, !snapshot.isEmpty {
-          guard !accumulated.hasSuffix(snapshot) else { return }
-          if snapshot.hasPrefix(accumulated), !accumulated.isEmpty {
-            let suffix = String(snapshot.dropFirst(accumulated.count))
-            accumulated = snapshot
-            if !suffix.isEmpty { yield(.agentMessageChunk(.text(suffix))) }
-          } else {
-            accumulated += snapshot
-            yield(.agentMessageChunk(.text(snapshot)))
-          }
-        }
-      case .thinking:
-        if let text = event.textDelta ?? event.textSnapshot, !text.isEmpty {
-          yield(.agentThoughtChunk(.text(text)))
-        }
-      case .lifecycle, .tool, .usage, .vendor:
-        break
-      }
-    }
-  }
+/// The offset a cursor issued by `gatewaySessionListCursor` names, or nil
+/// for anything else.
+func gatewaySessionListOffset(_ cursor: String) -> Int? {
+  guard let data = Data(base64Encoded: cursor),
+        let text = String(data: data, encoding: .utf8),
+        text.hasPrefix("offset:"),
+        let offset = Int(text.dropFirst("offset:".count)), offset > 0 else { return nil }
+  return offset
 }

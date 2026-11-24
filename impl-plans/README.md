@@ -8,6 +8,10 @@ Implementation plans translate design documents into actionable work.
 
 ## Completed
 
+ACP v1 and v2 dual-stack support (`design-docs/specs/acp-stdio-protocol.md`):
+
+- `impl-plans/completed/acp-v2-dual-stack.md`: JSON-RPC layer, v2 wire types, dual-stack server and client, gateway agent lifecycle, CLI flags, conformance tooling.
+
 Subscription usage (`design-docs/specs/design-subscription-usage.md`):
 
 - `impl-plans/completed/subscription-usage-types.md`: public types and ISO 8601 date parsing.

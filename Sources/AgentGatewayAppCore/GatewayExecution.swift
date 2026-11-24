@@ -46,6 +46,11 @@ public struct GatewayEvent: Equatable, Sendable {
 
 public typealias GatewayEventEmitter = @Sendable (GatewayEvent) -> Void
 
+/// Error code for a vendor CLI process that failed (non-zero exit or output
+/// over the limit). Deliberately not `-32002`, which ACP defines as
+/// "Resource not found" and clients read as a missing session.
+public let gatewayVendorProcessFailureCode = -32012
+
 public protocol GatewayExecuting: Sendable {
   func execute(_ params: GatewayExecuteParams, emit: @escaping GatewayEventEmitter) async throws -> GatewayExecuteResult
 }
@@ -134,13 +139,16 @@ public struct ProductionGatewayExecutor: GatewayExecuting, GatewayReadinessCheck
     }
     collector.finish()
     guard !result.outputTruncated else {
-      throw GatewayRPCError(code: -32002, message: "\(params.vendor.rawValue) exceeded the process output limit")
+      throw GatewayRPCError(
+        code: gatewayVendorProcessFailureCode,
+        message: "\(params.vendor.rawValue) exceeded the process output limit"
+      )
     }
     let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
     guard result.exitCode == 0 else {
       let detail = redactGatewaySensitiveText(environment: environment, stderr.trimmingCharacters(in: .whitespacesAndNewlines), params: params)
       throw GatewayRPCError(
-        code: -32002,
+        code: gatewayVendorProcessFailureCode,
         message: "\(params.vendor.rawValue) exited with status \(result.exitCode): \(detail)"
       )
     }

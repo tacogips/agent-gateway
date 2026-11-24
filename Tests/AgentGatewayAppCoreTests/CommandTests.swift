@@ -105,3 +105,35 @@ import Testing
     Issue.record("Unexpected error: \(error)")
   }
 }
+
+@Test func clientCommandDefaultsToACPVersion1AndAcceptsVersion2() throws {
+  let command = AppCommand(arguments: [])
+  let base = ["--vendor", "codex", "--model", "gpt-5", "--prompt", "hi", "--session-id", "thread-1"]
+  let v1 = try command.clientOptions(base)
+  #expect(v1.protocolVersion == 1)
+  #expect(v1.sessionMeta?["agentGateway"]?["vendorSessionId"]?.stringValue == "thread-1")
+
+  let v2 = try command.clientOptions(base + ["--acp-version", "2"])
+  #expect(v2.protocolVersion == 2)
+  // ACP v2 reserves unprefixed _meta keys, so the namespaced key is used.
+  #expect(v2.sessionMeta?[GatewayACPMetaKey.v2]?["vendorSessionId"]?.stringValue == "thread-1")
+  #expect(v2.sessionMeta?["agentGateway"] == nil)
+  // The version flag is a client concern and is not forwarded to the server.
+  #expect(!v2.serverOptions.contains("--acp-version"))
+
+  #expect(throws: AppCommand.Error.self) {
+    _ = try command.clientOptions(base + ["--acp-version", "3"])
+  }
+}
+
+@Test func serverCommandServesBothACPVersionsUnlessRestricted() throws {
+  let command = AppCommand(arguments: [])
+  #expect(try command.serverProtocolVersions(["--vendor", "codex"]) == [1, 2])
+  #expect(try command.serverProtocolVersions(["--acp-versions", "1"]) == [1])
+  #expect(try command.serverProtocolVersions(["--acp-versions", "2, 1"]) == [1, 2])
+  for invalid in ["", "0", "1,3", "two"] {
+    #expect(throws: AppCommand.Error.self) {
+      _ = try command.serverProtocolVersions(["--acp-versions", invalid])
+    }
+  }
+}

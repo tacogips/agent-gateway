@@ -53,8 +53,13 @@ public struct AppCommand: Sendable {
       return 0
     case "server":
       let defaults = try serverDefaults(Array(arguments.dropFirst()))
+      // One agent instance serves both protocol versions; the client's
+      // `initialize` selects which one this connection speaks.
+      let versions = try serverProtocolVersions(Array(arguments.dropFirst()))
+      let agent = GatewayACPAgent(defaults: defaults)
       let server = ACPAgentServer(
-        agent: GatewayACPAgent(defaults: defaults),
+        v1: versions.contains(ACPProtocol.versionV1) ? agent : nil,
+        v2: versions.contains(ACPProtocol.versionV2) ? agent : nil,
         transport: ACPFileHandleTransport.standardIO()
       )
       await server.serve()
@@ -103,9 +108,9 @@ public struct AppCommand: Sendable {
     """
     Usage: agent-gateway <command> [options]
 
-      agent-gateway server [--vendor <vendor> --model <model>] [options]
-      agent-gateway client --vendor <vendor> --model <model> --prompt <text> [options] [-- <vendor-args>]
-      agent-gateway client --agent <path> --prompt <text> [-- <agent-args>]
+      agent-gateway server [--vendor <vendor> --model <model>] [--acp-versions <1|2|1,2>] [options]
+      agent-gateway client --vendor <vendor> --model <model> --prompt <text> [--acp-version <1|2>] [options] [-- <vendor-args>]
+      agent-gateway client --agent <path> --prompt <text> [--acp-version <1|2>] [-- <agent-args>]
       agent-gateway readiness --vendor <vendor> [--executable <path>] [--api-key-environment <name>]
       agent-gateway models --vendor <vendor> [--api-key-environment <name>] [--base-url <url>] [--pricing <auto|offline|off>]
       agent-gateway subscription-usage --vendor <claude-code|codex> [--executable <path>]
@@ -116,12 +121,19 @@ public struct AppCommand: Sendable {
 
     Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
 
-    Protocol: Agent Client Protocol (ACP, https://agentclientprotocol.com).
+    Protocol: Agent Client Protocol (ACP, https://agentclientprotocol.com),
+    protocol versions 1 and 2.
     `server` serves the ACP agent side over stdio: JSON-RPC 2.0 messages,
     one JSON object per line (initialize, session/new, session/prompt;
-    streaming output as session/update notifications). Vendor and model can
-    be fixed with server options or supplied per session by the ACP client
-    via `_meta.agentGateway` on session/new. Diagnostics use stderr only.
+    streaming output as session/update notifications). The client's
+    `initialize` selects the version; `--acp-versions` restricts which
+    versions are served. Vendor and model can be fixed with server options
+    or supplied per session by the ACP client via `_meta` on session/new
+    (`agentGateway` in v1, `io.github.tacogips/agentGateway` in v2).
+    Diagnostics use stderr only.
+    `client` speaks ACP v1 unless `--acp-version 2` requests v2 (falling
+    back to v1 when the agent only speaks v1). In v2 the turn ends with an
+    idle `state_update`, not with the session/prompt response.
     `client` spawns an ACP agent (this binary's server mode, or --agent) and
     echoes the agent's raw ACP JSONL messages to stdout. `--prompt -` reads
     the prompt text from stdin; repeatable `--image <path>` and
@@ -215,8 +227,28 @@ public struct AppCommand: Sendable {
     return options.defaults(vendorArguments: vendorArguments)
   }
 
+  /// ACP protocol versions `server` serves: both unless `--acp-versions`
+  /// narrows the set (comma-separated, e.g. `1` or `1,2`).
+  func serverProtocolVersions(_ arguments: [String]) throws -> Set<Int> {
+    let (options, _) = try parseOptions(arguments)
+    guard let value = options.acpVersions else { return Set(ACPProtocol.supportedVersions) }
+    let versions = value.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) }
+    guard !versions.isEmpty,
+          versions.allSatisfy({ $0.map(ACPProtocol.supportedVersions.contains) == true }) else {
+      throw Error.missingValue("--acp-versions")
+    }
+    return Set(versions.compactMap { $0 })
+  }
+
   func clientOptions(_ arguments: [String]) throws -> GatewayACPClientOptions {
     let (options, vendorArguments) = try parseOptions(arguments)
+    var protocolVersion = ACPProtocol.versionV1
+    if let value = options.acpVersion {
+      guard let version = Int(value), ACPProtocol.supportedVersions.contains(version) else {
+        throw Error.missingValue("--acp-version")
+      }
+      protocolVersion = version
+    }
     let promptBlocksFromStdin = options.promptBlocksSource == "-"
     guard let prompt = options.prompt ?? (promptBlocksFromStdin ? "" : nil) else {
       throw Error.missingValue("--prompt")
@@ -229,7 +261,8 @@ public struct AppCommand: Sendable {
         images: options.images,
         promptBlocksFromStdin: promptBlocksFromStdin,
         agentExecutable: agent,
-        agentArguments: vendorArguments
+        agentArguments: vendorArguments,
+        protocolVersion: protocolVersion
       )
     }
     guard let vendorValue = options.vendor, GatewayVendor(rawValue: vendorValue) != nil else {
@@ -242,7 +275,8 @@ public struct AppCommand: Sendable {
       images: options.images,
       promptBlocksFromStdin: promptBlocksFromStdin,
       serverOptions: options.serverArguments(vendorArguments: vendorArguments),
-      sessionMeta: options.sessionMeta()
+      sessionMeta: options.sessionMeta(protocolVersion: protocolVersion),
+      protocolVersion: protocolVersion
     )
   }
 
@@ -279,6 +313,8 @@ struct GatewayClientOptions: Equatable, Sendable {
   var cursorWorkOnCurrentBranch: Bool?
   var cursorAutoCreatePR: Bool?
   var pricing: String?
+  var acpVersion: String?
+  var acpVersions: String?
 
   var usesImplicitCustomProvider: Bool {
     baseURL != nil
@@ -342,9 +378,11 @@ struct GatewayClientOptions: Equatable, Sendable {
   }
 
   /// `meta` for session/new, carrying an existing vendor session to resume.
-  func sessionMeta() -> ACPJSONValue? {
+  func sessionMeta(protocolVersion: Int = ACPProtocol.versionV1) -> ACPJSONValue? {
     guard let sessionId else { return nil }
-    return .object(["agentGateway": .object(["vendorSessionId": .string(sessionId)])])
+    return .object([
+      GatewayACPMetaKey.key(protocolVersion: protocolVersion): .object(["vendorSessionId": .string(sessionId)])
+    ])
   }
 
   mutating func assign(key: String, value: String) throws {
@@ -356,6 +394,8 @@ struct GatewayClientOptions: Equatable, Sendable {
     case "--working-directory", "--cwd": workingDirectory = value
     case "--executable": executable = value
     case "--agent": agentExecutable = value
+    case "--acp-version": acpVersion = value
+    case "--acp-versions": acpVersions = value
     case "--provider-name": providerName = value
     case "--api-key-environment": apiKeyEnvironment = value
     case "--base-url": baseURL = value

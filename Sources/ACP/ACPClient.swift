@@ -5,7 +5,11 @@ import Foundation
 /// delegates are both supported, so this protocol is intentionally not
 /// class-bound.
 public protocol ACPClientDelegate: Sendable {
+  /// A `session/update` on a connection that negotiated protocol version 1.
   func sessionUpdate(_ notification: ACPSessionNotification) async
+  /// A `session/update` on a connection that negotiated protocol version 2.
+  /// The default ignores it.
+  func sessionUpdate(_ notification: ACPV2SessionNotification) async
   /// Answers agent-initiated requests such as `session/request_permission`
   /// or `fs/read_text_file`. `params` is the raw JSON params fragment; return
   /// the encoded JSON result. The default rejects every method.
@@ -13,6 +17,8 @@ public protocol ACPClientDelegate: Sendable {
 }
 
 extension ACPClientDelegate {
+  public func sessionUpdate(_ notification: ACPV2SessionNotification) async {}
+
   public func handleRequest(method: String, params: Data) async throws -> Data {
     throw ACPError.methodNotFound(method)
   }
@@ -50,10 +56,17 @@ public struct ACPPromptResult: Equatable, Sendable {
   }
 }
 
-/// Fans `session/update` notifications out to per-turn subscribers.
-private actor ACPSessionUpdateHub {
+/// Fans `session/update` notifications out to per-turn subscribers and
+/// remembers which protocol version the connection negotiated.
+actor ACPSessionUpdateHub {
   private var nextToken = 0
   private var subscribers: [Int: (ACPSessionID, @Sendable (ACPSessionNotification) -> Void)] = [:]
+  private var subscribersV2: [Int: (ACPSessionID, @Sendable (ACPV2SessionUpdate) -> Void)] = [:]
+  private(set) var negotiatedVersion: Int?
+
+  func setNegotiatedVersion(_ version: Int) {
+    negotiatedVersion = version
+  }
 
   func subscribe(
     sessionId: ACPSessionID,
@@ -64,13 +77,29 @@ private actor ACPSessionUpdateHub {
     return nextToken
   }
 
+  func subscribeV2(
+    sessionId: ACPSessionID,
+    handler: @escaping @Sendable (ACPV2SessionUpdate) -> Void
+  ) -> Int {
+    nextToken += 1
+    subscribersV2[nextToken] = (sessionId, handler)
+    return nextToken
+  }
+
   func unsubscribe(_ token: Int) {
     subscribers[token] = nil
+    subscribersV2[token] = nil
   }
 
   func publish(_ notification: ACPSessionNotification) {
     for (sessionId, handler) in subscribers.values where sessionId == notification.sessionId {
       handler(notification)
+    }
+  }
+
+  func publish(_ notification: ACPV2SessionNotification) {
+    for (sessionId, handler) in subscribersV2.values where sessionId == notification.sessionId {
+      handler(notification.update)
     }
   }
 }
@@ -87,7 +116,7 @@ private actor ACPSessionUpdateHub {
 public struct ACPClientConnection: Sendable {
   public let connection: ACPConnection
   private let delegate: (any ACPClientDelegate)?
-  private let updateHub = ACPSessionUpdateHub()
+  let updateHub = ACPSessionUpdateHub()
 
   public init(transport: any ACPTransport, delegate: (any ACPClientDelegate)? = nil) {
     connection = ACPConnection(transport: transport)
@@ -102,8 +131,17 @@ public struct ACPClientConnection: Sendable {
   public static func inProcess(
     agent: any ACPAgent, delegate: (any ACPClientDelegate)? = nil
   ) async -> (client: ACPClientConnection, server: ACPAgentServer) {
+    await inProcess(v1: agent, v2: nil, delegate: delegate)
+  }
+
+  /// Hosts a dual-stack endpoint in this process: the client picks the
+  /// protocol version with `initialize(_:)` (v1) or `negotiate(_:)` (v2
+  /// with fallback).
+  public static func inProcess(
+    v1: (any ACPAgent)?, v2: (any ACPV2Agent)?, delegate: (any ACPClientDelegate)? = nil
+  ) async -> (client: ACPClientConnection, server: ACPAgentServer) {
     let (clientSide, agentSide) = ACPInMemoryTransport.pair()
-    let server = ACPAgentServer(agent: agent, transport: agentSide)
+    let server = ACPAgentServer(v1: v1, v2: v2, transport: agentSide)
     await server.start()
     let client = ACPClientConnection(transport: clientSide, delegate: delegate)
     await client.start()
@@ -115,12 +153,24 @@ public struct ACPClientConnection: Sendable {
     let delegate = delegate
     let hub = updateHub
     await connection.setNotificationHandler { method, params, _ in
-      guard method == ACPMethod.sessionUpdate,
-            let notification = try? ACPConnection.decodeParams(ACPSessionNotification.self, from: params) else {
+      guard method == ACPMethod.sessionUpdate else { return }
+      // One connection speaks exactly one negotiated version, and the two
+      // versions' update shapes are decoded by separate types.
+      if await hub.negotiatedVersion == ACPProtocol.versionV2 {
+        guard let notification = try? ACPConnection.decodeParams(ACPV2SessionNotification.self, from: params) else {
+          return
+        }
+        // The delegate observes an update before per-turn streams do, so a
+        // turn never finishes ahead of the delegate seeing its last update.
+        await delegate?.sessionUpdate(notification)
+        await hub.publish(notification)
         return
       }
-      await hub.publish(notification)
+      guard let notification = try? ACPConnection.decodeParams(ACPSessionNotification.self, from: params) else {
+        return
+      }
       await delegate?.sessionUpdate(notification)
+      await hub.publish(notification)
     }
     await connection.setRequestHandler { method, params, _ in
       guard let delegate else { throw ACPError.methodNotFound(method) }
@@ -137,8 +187,19 @@ public struct ACPClientConnection: Sendable {
     await connection.waitUntilClosed()
   }
 
+  /// Initializes the connection as protocol version 1. Use
+  /// `negotiate(_:)` to request version 2 with fallback to version 1.
   public func initialize(_ request: ACPInitializeRequest = ACPInitializeRequest()) async throws -> ACPInitializeResponse {
-    try await connection.sendRequest(method: ACPMethod.initialize, params: request)
+    let response: ACPInitializeResponse = try await connection.sendRequest(
+      method: ACPMethod.initialize, params: request
+    )
+    guard response.protocolVersion == ACPProtocol.versionV1 else {
+      throw ACPError.unsupportedProtocolVersion(
+        requested: request.protocolVersion, supported: [ACPProtocol.versionV1]
+      )
+    }
+    await updateHub.setNegotiatedVersion(response.protocolVersion)
+    return response
   }
 
   public func newSession(_ request: ACPNewSessionRequest) async throws -> ACPNewSessionResponse {
@@ -149,7 +210,35 @@ public struct ACPClientConnection: Sendable {
     try await connection.sendRequest(method: ACPMethod.sessionPrompt, params: request)
   }
 
-  /// Switches the session's model; valid for agents that returned `models`
+  /// v1 `session/load`: restores a session and replays its history as
+  /// `session/update` notifications before responding. Requires the
+  /// agent's `loadSession` capability.
+  public func loadSession(_ request: ACPLoadSessionRequest) async throws -> ACPLoadSessionResponse {
+    try await connection.sendRequest(method: ACPMethod.sessionLoad, params: request)
+  }
+
+  /// v1 `session/resume`: restores a session without replay. Requires the
+  /// agent's `sessionCapabilities.resume`.
+  public func resumeSession(_ request: ACPLoadSessionRequest) async throws -> ACPLoadSessionResponse {
+    try await connection.sendRequest(method: ACPMethod.sessionResume, params: request)
+  }
+
+  /// v1 `session/set_config_option`; returns the complete updated options.
+  public func setConfigOption(
+    sessionId: ACPSessionID, configId: String, value: ACPSessionConfigValue
+  ) async throws -> [ACPSessionConfigOption] {
+    let response: ACPSetSessionConfigOptionResponse = try await connection.sendRequest(
+      method: ACPMethod.sessionSetConfigOption,
+      params: ACPSetSessionConfigOptionRequest(
+        sessionId: sessionId, configId: configId, value: value, usesV1Encoding: true
+      )
+    )
+    return response.configOptions
+  }
+
+  /// Legacy `session/set_model` from an early unstable v1 schema; current
+  /// agents expose models as a `model` config option instead. Valid for
+  /// agents that returned `models`
   /// from `session/new`.
   public func setModel(sessionId: ACPSessionID, modelId: String) async throws {
     struct Empty: Decodable, Sendable {}
