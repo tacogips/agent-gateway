@@ -15,6 +15,12 @@ import FoundationNetworking
 /// `textDelta` carries incremental text; `textSnapshot` carries a whole
 /// message from snapshot-oriented vendors and may repeat text already
 /// delivered as deltas (`GatewayACPStreamBridge` performs the dedup).
+///
+/// CLI vendors also report what they do besides writing text: `toolCalls`
+/// (each event carries what its vendor line said about a call; events with
+/// the same id describe one call), `plan` (the vendor's whole todo list),
+/// and `context` (context-window and cost facts). An event with tool calls
+/// or a plan and no text is on the `tool` channel.
 public struct GatewayEvent: Equatable, Sendable {
   public var type: String
   public var channel: GatewayEventChannel
@@ -24,6 +30,9 @@ public struct GatewayEvent: Equatable, Sendable {
   public var vendorPayload: String?
   public var sessionId: String?
   public var usage: GatewayUsage?
+  public var toolCalls: [GatewayToolCallEvent]
+  public var plan: GatewayPlanEvent?
+  public var context: GatewayContextUsage?
 
   public init(
     type: String,
@@ -32,7 +41,10 @@ public struct GatewayEvent: Equatable, Sendable {
     textSnapshot: String? = nil,
     vendorPayload: String? = nil,
     sessionId: String? = nil,
-    usage: GatewayUsage? = nil
+    usage: GatewayUsage? = nil,
+    toolCalls: [GatewayToolCallEvent] = [],
+    plan: GatewayPlanEvent? = nil,
+    context: GatewayContextUsage? = nil
   ) {
     self.type = type
     self.channel = channel
@@ -41,6 +53,9 @@ public struct GatewayEvent: Equatable, Sendable {
     self.vendorPayload = vendorPayload
     self.sessionId = sessionId
     self.usage = usage
+    self.toolCalls = toolCalls
+    self.plan = plan
+    self.context = context
   }
 }
 
@@ -533,6 +548,7 @@ struct ParsedVendorEvent {
   var thinkingDelta: String?
   var usage: GatewayUsage?
   var sessionId: String?
+  var activity = ParsedVendorActivity()
 
   /// Classifies this parse into the event delivered to emitters.
   func event(vendorPayload: String) -> GatewayEvent {
@@ -541,7 +557,10 @@ struct ParsedVendorEvent {
       channel: .vendor,
       vendorPayload: vendorPayload,
       sessionId: sessionId,
-      usage: usage
+      usage: usage,
+      toolCalls: activity.toolCalls,
+      plan: activity.plan,
+      context: activity.context
     )
     if let delta, !delta.isEmpty {
       event.channel = .assistant
@@ -552,7 +571,9 @@ struct ParsedVendorEvent {
     } else if let thinkingDelta, !thinkingDelta.isEmpty {
       event.channel = .thinking
       event.textDelta = thinkingDelta
-    } else if usage != nil {
+    } else if !activity.toolCalls.isEmpty || activity.plan != nil {
+      event.channel = .tool
+    } else if usage != nil || activity.context != nil {
       event.channel = .usage
     }
     return event
@@ -564,6 +585,13 @@ func parseVendorJSON(_ line: String, vendor: GatewayVendor) -> ParsedVendorEvent
         let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
     return ParsedVendorEvent(type: "vendor.output")
   }
+  var parsed = parseVendorText(object, vendor: vendor)
+  parsed.activity = parseVendorActivity(data: data, object: object, vendor: vendor)
+  return parsed
+}
+
+/// The text, reasoning, usage, and session id of one vendor JSON object.
+private func parseVendorText(_ object: [String: Any], vendor: GatewayVendor) -> ParsedVendorEvent {
   let type = object["type"] as? String ?? "vendor.event"
   let sessionId = object["session_id"] as? String
     ?? object["sessionId"] as? String

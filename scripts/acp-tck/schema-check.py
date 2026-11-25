@@ -1,7 +1,8 @@
 """Validates agent-gateway server traffic against the upstream ACP JSON Schemas.
 
 Drives `agent-gateway server` through v1 and v2 flows (setup, config options,
-prompt turns, list, close, replay, cancel, delete, and error paths) with the
+prompt turns, tool calls, plans, usage, list, close, replay, cancel, delete,
+and error paths) with the
 CLI and API fake vendors, and validates every request it sends and every
 response, error, and notification the server writes against the stable
 schema of the negotiated version. Run through scripts/acp-schema-check.sh.
@@ -83,7 +84,21 @@ class Peer:
 text = lambda t: [{"type": "text", "text": t}]
 idle = lambda m: m.get("method") == "session/update" and m["params"]["update"].get("state") == "idle"
 
-def run_v1(args, env=None, config=False):
+def expect_activity(peer, tools):
+    """With the CLI fake, the TOOLS turns must have reported every activity
+    kind, and no tool call may be left without a final status."""
+    if not tools: return
+    updates = [m["params"]["update"] for m in peer.updates if m.get("method") == "session/update"]
+    kinds = {u.get("sessionUpdate") for u in updates}
+    wanted = {"tool_call", "tool_call_update", "plan", "usage_update"} if peer.version == 1 else {"tool_call_update", "plan_update", "usage_update"}
+    if wanted - kinds: problems.append(f"v{peer.version} activity: missing {sorted(wanted - kinds)}")
+    status = {}
+    for u in updates:
+        if u.get("toolCallId") and u.get("status"): status[u["toolCallId"]] = u["status"]
+    dangling = sorted(i for i, s in status.items() if s not in ("completed", "failed"))
+    if dangling or not status: problems.append(f"v{peer.version} activity: tool calls left open: {dangling or 'none reported'}")
+
+def run_v1(args, env=None, config=False, tools=False):
     a = Peer(1, args, env)
     a.call("initialize", {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "check", "version": "1"}})
     s = a.call("session/new", {"cwd": "/tmp", "mcpServers": []})["result"]
@@ -91,19 +106,21 @@ def run_v1(args, env=None, config=False):
     if config:
         a.call("session/set_config_option", {"sessionId": sid, "configId": "model", "value": "fake/model-b"})
     a.call("session/prompt", {"sessionId": sid, "prompt": text("hi")})
+    a.call("session/prompt", {"sessionId": sid, "prompt": text("TOOLS")})
     a.call("session/list", {})
     a.call("session/close", {"sessionId": sid})
     a.call("session/prompt", {"sessionId": sid, "prompt": text("closed")})        # -32002
     a.call("session/load", {"sessionId": sid, "cwd": "/tmp", "mcpServers": []})
     a.call("session/resume", {"sessionId": sid, "cwd": "/tmp", "mcpServers": []})
-    i = a.send("session/prompt", {"sessionId": sid, "prompt": text("SLOW")})
+    i = a.send("session/prompt", {"sessionId": sid, "prompt": text("SLOW TOOLS")})
     time.sleep(0.5); a.send("session/cancel", {"sessionId": sid}, notify=True)
     a.pump(lambda m: m.get("id") == i and "method" not in m)
+    expect_activity(a, tools)
     a.call("session/delete", {"sessionId": sid})
     a.call("session/new", {"cwd": "relative", "mcpServers": []})                  # -32602
     a.close()
 
-def run_v2(args, env=None, config=False):
+def run_v2(args, env=None, config=False, tools=False):
     a = Peer(2, args, env)
     a.call("initialize", {"protocolVersion": 2, "info": {"name": "check", "version": "1"}, "capabilities": {}})
     sid = a.call("session/new", {"cwd": "/tmp", "systemPrompt": {"mode": "append", "content": text("Be brief.")}})["result"]["sessionId"]
@@ -112,13 +129,16 @@ def run_v2(args, env=None, config=False):
     a.call("session/prompt", {"sessionId": sid, "prompt": text("hi"), "idempotencyKey": "k1"})
     a.pump(idle)
     a.call("session/prompt", {"sessionId": sid, "prompt": text("hi"), "idempotencyKey": "k1"})
+    a.call("session/prompt", {"sessionId": sid, "prompt": text("TOOLS")})
+    a.pump(idle)
     a.call("session/list", {"cwd": "/tmp"})
     a.call("session/close", {"sessionId": sid})
     a.call("session/prompt", {"sessionId": sid, "prompt": text("closed")})        # -32002
     a.call("session/resume", {"sessionId": sid, "cwd": "/tmp", "replayFrom": {"type": "start"}})
-    a.call("session/prompt", {"sessionId": sid, "prompt": text("SLOW")})
+    a.call("session/prompt", {"sessionId": sid, "prompt": text("SLOW TOOLS")})
     time.sleep(0.5); a.send("session/cancel", {"sessionId": sid}, notify=True)
     a.pump(idle)
+    expect_activity(a, tools)
     a.call("session/prompt", {"sessionId": sid, "prompt": [{"type": "audio", "data": "AAAA", "mimeType": "audio/wav"}]})  # -32602
     a.call("session/delete", {"sessionId": sid})
     a.close()
@@ -131,7 +151,7 @@ cli = ["--vendor", "claude-code", "--model", "fake", "--executable", FAKE]
 api = ["--vendor", "openrouter", "--model", "fake/model-a", "--base-url", f"http://127.0.0.1:{API_PORT}", "--api-key-environment", "CHECK_KEY"]
 import os
 env = {**os.environ, "CHECK_KEY": "fake"}
-run_v1(cli); run_v2(cli); run_v1(api, env, config=True); run_v2(api, env, config=True)
+run_v1(cli, tools=True); run_v2(cli, tools=True); run_v1(api, env, config=True); run_v2(api, env, config=True)
 print(f"validated {checked[1]} v1 and {checked[2]} v2 payloads; {len(problems)} schema problems")
 for p in sorted(set(problems)): print("  " + p)
 sys.exit(1 if problems else 0)

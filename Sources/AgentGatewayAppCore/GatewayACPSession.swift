@@ -72,6 +72,8 @@ struct GatewayForegroundTurn {
   /// message at the current point and history can retain it afterwards.
   var agentText = ""
   var thoughtText = ""
+  /// Cost the vendor has reported for this turn's execution so far.
+  var costUSD: Double?
   /// Callers (`session/close`, `session/delete`) waiting for this work to
   /// end and its idle update to be sent.
   var endWaiters: [CheckedContinuation<Void, Never>] = []
@@ -96,6 +98,10 @@ struct GatewaySession {
   var promptKeys: [String: ACPMessageID] = [:]
   /// Models advertised for this session; empty when the vendor has no listing.
   var availableModels: [ACPModelInfo] = []
+  /// Turns started so far; scopes the tool-call ids of each turn.
+  var turnCount = 0
+  /// Vendor-reported cost of the session's finished turns.
+  var costUSD = 0.0
 
   /// Whether the session is active on the connection: created or resumed
   /// and not closed since. Closed sessions stay listed and resumable.
@@ -310,59 +316,4 @@ func gatewayResultMeta(_ result: GatewayExecuteResult, key: String) -> ACPJSONVa
     gateway["usage"] = .object(tokens)
   }
   return .object([key: .object(gateway)])
-}
-
-/// One piece of streamed vendor output.
-enum GatewayStreamChunk: Equatable, Sendable {
-  case message(String)
-  case thought(String)
-}
-
-/// Converts gateway emitter callbacks into ordered output chunks.
-///
-/// Streaming vendors produce token deltas that map 1:1 to message chunks.
-/// Non-streaming vendors produce whole-message snapshots; those are
-/// de-duplicated so a final echo of already-streamed text (e.g. Claude
-/// Code's `result` event or cursor-agent's `result` after deltas) is not
-/// emitted twice.
-final class GatewayACPStreamBridge: @unchecked Sendable {
-  private let lock = NSLock()
-  private let yield: @Sendable (GatewayStreamChunk) -> Void
-  private var accumulated = ""
-
-  init(yield: @escaping @Sendable (GatewayStreamChunk) -> Void) {
-    self.yield = yield
-  }
-
-  var emitter: GatewayEventEmitter {
-    { [self] event in consume(event) }
-  }
-
-  func consume(_ event: GatewayEvent) {
-    lock.withLock {
-      switch event.channel {
-      case .assistant:
-        if let delta = event.textDelta, !delta.isEmpty {
-          accumulated += delta
-          yield(.message(delta))
-        } else if let snapshot = event.textSnapshot, !snapshot.isEmpty {
-          guard !accumulated.hasSuffix(snapshot) else { return }
-          if snapshot.hasPrefix(accumulated), !accumulated.isEmpty {
-            let suffix = String(snapshot.dropFirst(accumulated.count))
-            accumulated = snapshot
-            if !suffix.isEmpty { yield(.message(suffix)) }
-          } else {
-            accumulated += snapshot
-            yield(.message(snapshot))
-          }
-        }
-      case .thinking:
-        if let text = event.textDelta ?? event.textSnapshot, !text.isEmpty {
-          yield(.thought(text))
-        }
-      case .lifecycle, .tool, .usage, .vendor:
-        break
-      }
-    }
-  }
 }

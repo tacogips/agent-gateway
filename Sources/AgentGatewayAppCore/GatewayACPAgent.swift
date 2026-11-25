@@ -408,13 +408,17 @@ public actor GatewayACPAgent: ACPAgent {
     sessions[request.sessionId]?.retain(
       GatewayHistoryMessage(role: .user, messageId: gatewayNewMessageId(), content: request.prompt)
     )
+    sessions[request.sessionId]?.turnCount += 1
+    let scope = gatewayActivityScope(turn: session.turnCount + 1)
+    let priorCostUSD = session.costUSD
 
     // Chunks are pumped through an AsyncStream so the synchronous vendor
     // emitter preserves token order while they are sent sequentially.
     let (stream, continuation) = AsyncStream.makeStream(of: GatewayStreamChunk.self)
-    let pump = Task { () -> (message: String, thought: String) in
+    let pump = Task { () -> GatewayStreamedOutput in
       var message = ""
       var thought = ""
+      var costUSD: Double?
       for await chunk in stream {
         let update: ACPSessionUpdate
         switch chunk {
@@ -424,12 +428,21 @@ public actor GatewayACPAgent: ACPAgent {
         case .thought(let text):
           thought += text
           update = .agentThoughtChunk(.text(text))
+        case .toolCall(let toolCall):
+          update = toolCall.v1Update
+        case .plan(let plan):
+          update = .plan(plan.entries)
+        case .usage(let usage):
+          costUSD = usage.costUSD ?? costUSD
+          // Reported once the vendor has said how large the context window is.
+          guard let usageUpdate = usage.v1Update(priorCostUSD: priorCostUSD) else { continue }
+          update = usageUpdate
         }
         await connection.sendUpdate(ACPSessionNotification(sessionId: request.sessionId, update: update))
       }
-      return (message, thought)
+      return GatewayStreamedOutput(message: message, thought: thought, costUSD: costUSD)
     }
-    let bridge = GatewayACPStreamBridge { continuation.yield($0) }
+    let bridge = GatewayACPStreamBridge(scope: scope) { continuation.yield($0) }
     let executor = executor
     let task = Task { try await executor.execute(params, emit: bridge.emitter) }
     sessions[request.sessionId]?.activeTask = task
@@ -452,8 +465,15 @@ public actor GatewayACPAgent: ACPAgent {
     } catch {
       outcome = .failure(error)
     }
+    // However the turn ended, no tool call is left looking like it is
+    // still running: the vendor execution is over.
+    switch outcome {
+    case .success: bridge.settleOpenToolCalls(.completed)
+    case .failure: bridge.settleOpenToolCalls(.failed)
+    }
     continuation.finish()
     let streamed = await pump.value
+    sessions[request.sessionId]?.costUSD += streamed.costUSD ?? 0
     retainOutput(sessionId: request.sessionId, thought: streamed.thought, message: streamed.message)
     switch outcome {
     case .success(let result):

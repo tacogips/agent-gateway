@@ -122,6 +122,8 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
   public var locations: [ACPToolCallLocation]?
   public var rawInput: ACPJSONValue?
   public var rawOutput: ACPJSONValue?
+  /// The tool's programmatic name, as opposed to the display `title`.
+  public var name: String?
 
   public init(
     toolCallId: ACPToolCallID,
@@ -131,7 +133,8 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
     content: [ACPToolCallContent]? = nil,
     locations: [ACPToolCallLocation]? = nil,
     rawInput: ACPJSONValue? = nil,
-    rawOutput: ACPJSONValue? = nil
+    rawOutput: ACPJSONValue? = nil,
+    name: String? = nil
   ) {
     self.toolCallId = toolCallId
     self.title = title
@@ -141,6 +144,7 @@ public struct ACPToolCall: Codable, Equatable, Sendable {
     self.locations = locations
     self.rawInput = rawInput
     self.rawOutput = rawOutput
+    self.name = name
   }
 }
 
@@ -153,6 +157,8 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
   public var locations: [ACPToolCallLocation]?
   public var rawInput: ACPJSONValue?
   public var rawOutput: ACPJSONValue?
+  /// The tool's programmatic name, as opposed to the display `title`.
+  public var name: String?
 
   public init(
     toolCallId: ACPToolCallID,
@@ -162,7 +168,8 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
     content: [ACPToolCallContent]? = nil,
     locations: [ACPToolCallLocation]? = nil,
     rawInput: ACPJSONValue? = nil,
-    rawOutput: ACPJSONValue? = nil
+    rawOutput: ACPJSONValue? = nil,
+    name: String? = nil
   ) {
     self.toolCallId = toolCallId
     self.title = title
@@ -172,6 +179,7 @@ public struct ACPToolCallUpdate: Codable, Equatable, Sendable {
     self.locations = locations
     self.rawInput = rawInput
     self.rawOutput = rawOutput
+    self.name = name
   }
 }
 

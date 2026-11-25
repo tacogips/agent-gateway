@@ -219,10 +219,13 @@ extension GatewayACPAgent: ACPV2Agent {
 
   /// Starts the foreground work an inserted prompt asks for.
   private func startTurn(sessionId: ACPSessionID, prompt: [ACPContentBlock]) {
+    sessions[sessionId]?.turnCount += 1
     guard let session = sessions[sessionId] else { return }
     send(.stateUpdate(.running()), sessionId: sessionId)
     let (stream, continuation) = AsyncStream.makeStream(of: GatewayStreamChunk.self)
-    let bridge = GatewayACPStreamBridge { continuation.yield($0) }
+    let bridge = GatewayACPStreamBridge(scope: gatewayActivityScope(turn: session.turnCount)) {
+      continuation.yield($0)
+    }
     let executor = executor
     let params = Result { try executeParams(for: session, input: try gatewayPromptInput(prompt)) }
     let task = Task { [self] in
@@ -236,6 +239,12 @@ extension GatewayACPAgent: ACPV2Agent {
         outcome = .success(try await executor.execute(try params.get(), emit: bridge.emitter))
       } catch {
         outcome = .failure(error)
+      }
+      // However the work ended, no tool call is left looking like it is
+      // still running: the vendor execution is over.
+      switch outcome {
+      case .success: bridge.settleOpenToolCalls(.completed)
+      case .failure: bridge.settleOpenToolCalls(.failed)
       }
       continuation.finish()
       // Pending output is delivered before the idle update.
@@ -262,6 +271,15 @@ extension GatewayACPAgent: ACPV2Agent {
         .agentThoughtChunk(ACPV2ContentChunk(messageId: turn.thoughtMessageId, content: .text(text))),
         sessionId: sessionId
       )
+    case .toolCall(let toolCall):
+      send(.toolCallUpdate(toolCall.v2Update), sessionId: sessionId)
+    case .plan(let plan):
+      send(plan.v2Update, sessionId: sessionId)
+    case .usage(let usage):
+      sessions[sessionId]?.turn?.costUSD = usage.costUSD ?? turn.costUSD
+      // Reported once the vendor has said how large the context window is.
+      guard let update = usage.v2Update(priorCostUSD: sessions[sessionId]?.costUSD ?? 0) else { return }
+      send(update, sessionId: sessionId)
     }
   }
 
@@ -297,6 +315,7 @@ extension GatewayACPAgent: ACPV2Agent {
       sessionId: sessionId, thought: turn.thoughtText, message: turn.agentText,
       thoughtMessageId: turn.thoughtMessageId, agentMessageId: turn.agentMessageId
     )
+    sessions[sessionId]?.costUSD += turn.costUSD ?? 0
     sessions[sessionId]?.turn = nil
     send(.stateUpdate(state), sessionId: sessionId)
     for waiter in turn.endWaiters {

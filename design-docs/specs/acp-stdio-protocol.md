@@ -224,6 +224,76 @@ Every vendor token stream is represented as `session/update` notifications:
 
 (`messageId` is present on v2 connections only.)
 
+## Tool calls, plans, and usage
+
+CLI vendors report more than text. The gateway reads tool work, todo lists,
+and context usage from the vendor's own output stream and forwards it as
+ACP updates, in the order the vendor produced it relative to message and
+thought chunks. API vendors (openai, anthropic, gemini, openrouter,
+cursor-api) run no tools through the gateway and report none of this.
+
+Only what a vendor line actually contains is forwarded; nothing is
+synthesized beyond the fallbacks noted below.
+
+| Vendor | Source lines | Updates |
+| --- | --- | --- |
+| claude-code | `stream_event` `content_block_start` (tool announced), `assistant` `tool_use` (input complete), `user` `tool_result` | tool call: `pending`, then `in_progress` with `rawInput`, title, and location, then `completed`/`failed` (`is_error`) with `rawOutput` and text content |
+| claude-code | `assistant` `tool_use` named `TodoWrite` | plan (entry `content` and `status`) |
+| claude-code | `message_start`/`message_delta` usage, `result` `modelUsage` and `total_cost_usd` | `usage_update` |
+| codex | `item.started`/`item.updated`/`item.completed` of type `command_execution`, `file_change`, `mcp_tool_call`, `web_search` | tool call: `in_progress`, then `completed`/`failed` |
+| codex | items of type `todo_list` | plan (entry `content`, done or not done) |
+| cursor | `tool_call` lines, `subtype` `started`/`completed` | tool call: `in_progress`, then `completed`/`failed` |
+
+Field mapping:
+
+- `toolCallId` is `t<turn>-<vendor id>`. Vendors keep ids unique within one
+  execution only (codex numbers items from zero on every run) and each turn
+  is a new execution, so the turn number scopes them to the session.
+- `name` is the vendor's tool name (`Bash`, the codex item type, the MCP
+  tool, the cursor tool key). `title` is the command for shell tools, the
+  tool name plus its main argument for file, search, and fetch tools, and
+  the bare name otherwise. `kind` is derived from the tool name.
+- `rawInput` and `rawOutput` are the vendor's JSON: Claude Code's tool
+  `input` and structured `tool_use_result` (the `tool_result` content when
+  a message carries several results); codex `command` and
+  `aggregated_output`/`exit_code`, `changes`, MCP `arguments` and
+  `result`/`error`; cursor `args` and `result`.
+- `content` is the textual output as one text block. On v2, codex
+  `file_change` items also carry a `diff` content item listing each
+  absolute path with its operation; v1 diffs need file text the vendors do
+  not report, so v1 has `locations` and `rawInput` only.
+- `locations` are reported only for absolute paths.
+- Plan entries have no vendor priority; ACP requires one, so every entry is
+  `medium`. Codex todos are `completed` or `pending`. On v2 the `planId` is
+  the scoped codex item id, or `plan` for Claude Code's single list.
+- `usage_update` needs both `used` and `size`, so it is sent only when the
+  vendor reports a context window: Claude Code, at the end of the turn.
+  `used` is the token count of the main model's latest call (input, cache
+  read, cache write, and output), `size` is that model's `contextWindow`,
+  and `cost` is the session's cumulative `total_cost_usd`. The gateway's
+  `_meta` object carries the turn's `inputTokens`, `outputTokens`, and
+  `totalTokens`. Codex and cursor report no context window, so they send no
+  `usage_update`; their token counts remain in the turn result (see Vendor
+  selection via `_meta`).
+
+Rules that hold on both versions:
+
+- v1 sends `tool_call` for the first report of an id and `tool_call_update`
+  with only the changed fields afterwards; v2 sends `tool_call_update`
+  upserts the same way. A repeated vendor report sends nothing, a status
+  never moves backwards, and nothing follows a final status.
+- A call first seen already finished (codex `file_change`) is created with
+  its final status.
+- Every way a turn ends settles the tool calls still open, before the v1
+  prompt response or the v2 idle `state_update`: `completed` when the
+  vendor execution succeeded, `failed` when it failed or was cancelled.
+- On v1, `usage_update` and the tool-call `name` field are part of schema
+  1.35.0; the `ACP` library models `name` and passes `usage_update` through
+  as an unmodeled update.
+
+History replay (`session/load`, `session/resume` with `replayFrom`) covers
+messages only; tool calls, plans, and usage are live updates.
+
 ## Model selection
 
 For API vendors the session setup response includes a `model` config option
@@ -376,8 +446,11 @@ No MANDATORY or CAPABILITY requirement fails. Skipped rows are requirements
 the gateway gives the TCK nothing to judge: it advertises no auth methods
 and sends no requests to the client (v2), and the API fake answers a cancel
 too quickly for the v1 cancellation rows to count (they pass in the CLI run).
-The remaining CAPABILITY skips are features the gateway does not offer: tool
-calls, terminals, plans, permission requests, subagents, slash commands.
+The remaining CAPABILITY skips are features the gateway did not offer when
+these runs were recorded: tool calls, terminals, plans, permission requests,
+subagents, slash commands. The fakes report tool calls and a plan only for a
+prompt containing `TOOLS`, which the TCK does not send, so the table is
+unchanged by tool-call reporting and those rows remain unjudged.
 
 The CLI fake implements `--mcp-config` the way the real CLI does (it
 launches each server and performs the MCP `initialize` handshake), so the
@@ -389,10 +462,13 @@ see MCP servers above.
 `scripts/acp-schema-check.sh` covers the schema revision this implementation
 targets, which is newer than the one the TCK vendors. It drives the server
 through v1 and v2 flows with both fake vendors (setup, config options,
-prompt turns, list, close, replay, cancel, delete, and error paths) and
+prompt turns, tool calls with a plan and usage, list, close, replay, a
+cancel with a tool call in flight, delete, and error paths) and
 validates every request, response, error, and notification against the
 stable `schema/v1/schema.json` and `schema/v2/schema.json` at `d3ac0e6`:
-84 v1 and 106 v2 payloads, no schema violations. The CLI client's own
+130 v1 and 159 v2 payloads, no schema violations. With the CLI fake it also
+requires every activity kind to appear and every reported tool call to end
+`completed` or `failed`. The CLI client's own
 requests and its permission response were validated the same way while it
 drove the reference agent below.
 
@@ -414,9 +490,56 @@ statement of conformance.
 
 - MCP servers for vendors other than claude-code and codex, and the HTTP
   MCP transport.
-- Tool-call, terminal, plan, and permission reporting: vendor CLIs run with
-  their own tool handling, and the gateway relays their text and reasoning
-  output only. The `ACP` library models these updates for clients that talk
-  to other agents.
+- Terminal reporting and `session/request_permission`: vendor CLIs run with
+  their own tool handling. The `ACP` library models these for clients that
+  talk to other agents.
 - Authentication methods, subagents, slash commands, elicitation.
 - Session persistence across server processes.
+
+## Follow-ups for activity reporting
+
+Not done, with what is known about each:
+
+- `session/request_permission` from vendor approval prompts. The gateway
+  starts vendors in their non-interactive modes (`claude -p`, `codex exec`,
+  `cursor-agent --print`), which never ask: they decide from their own
+  configuration and report the outcome (Claude Code attaches a
+  `permission_decision` to each tool result and lists refusals in the
+  result's `permission_denials`). Asking the client needs a two-way channel
+  to the vendor: Claude Code's stream-json control protocol
+  (`--input-format stream-json`, which `GatewaySubscriptionUsageReader`
+  already speaks for another request) can route `can_use_tool` requests;
+  `codex exec` has no such channel, so codex needs its app-server protocol
+  instead. `GatewayExecuting` only has an outbound event emitter today, so
+  this is an executor interface change, not a parser change. The client
+  side of the request exists.
+- Rate-limit reporting. Claude Code prints `rate_limit_event` lines
+  (`status`, `rateLimitType`, `utilization`, `resetsAt`) that are currently
+  relayed only as raw vendor events; they map naturally to a v2 `notice`.
+  Failures keep their existing codes: a vendor process failure is `-32012`
+  and an API vendor HTTP failure `-32010` after retries, with the vendor's
+  text as the message. A distinct rate-limit code needs per-vendor
+  detection of that text or status (HTTP 429 for API vendors).
+- Models and modes at `session/new`. Models are already advertised as the
+  `model` config option when the vendor can list them. A CLI's permission
+  mode, tools, and slash commands appear only in its `system` `init` line,
+  after an execution has started, so they could be reported after the first
+  turn (`available_commands_update`, a `mode` config option) but not in the
+  `session/new` response without a probe run.
+- Replay of tool calls and plans in history, and tool calls in flight when
+  a v2 client resumes mid-turn (it then sees updates for a call it never
+  saw created).
+- v2 `cancelled` status for calls open at a cancel; both versions report
+  `failed`, the only non-success final status v1 has.
+- Claude Code `Edit`/`Write` as v1 `diff` content (the input has the old
+  and new text), the newer `TaskCreate`/`TaskUpdate` tools as a plan (they
+  report one task at a time, never the list), and linking a subagent's tool
+  calls to the call that spawned it (`parent_tool_use_id`).
+- `usage_update` for codex and cursor, which needs a context window size
+  from somewhere other than their output stream.
+- Verification of the cursor mapping against a signed-in `cursor-agent`; it
+  follows the documented `stream-json` format and was not run live. The
+  Claude Code and codex mappings were checked against captured output of
+  Claude Code 2.1.318 and codex-cli 0.172.0, except `TodoWrite` and codex
+  `todo_list`/`file_change`/`mcp_tool_call`/`web_search`, which those runs
+  did not produce.
