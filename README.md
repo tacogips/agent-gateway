@@ -119,6 +119,7 @@ against deterministic fake vendors:
 scripts/acp-tck.sh --protocol-version 1
 scripts/acp-tck.sh --protocol-version 2
 scripts/acp-tck.sh --protocol-version 2 --vendor-mode api   # also exercises config options
+scripts/acp-schema-check.sh   # validates wire traffic against the upstream v1 and v2 JSON Schemas
 ```
 
 ## ACP client library: streaming or aggregated

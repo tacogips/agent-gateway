@@ -4,8 +4,9 @@ Status: implemented for ACP protocol versions 1 and 2. Supersedes the former
 custom `agent/execute` JSONL protocol (`jsonl-stdio-protocol.md`, removed).
 
 Reference: [Agent Client Protocol](https://agentclientprotocol.com), schema
-`agentclientprotocol/agent-client-protocol` at v1 1.9.x and v2 2.0.0-beta.4
-(v2 is in Preview upstream). The v2 work follows the upstream
+`agentclientprotocol/agent-client-protocol` at commit `d3ac0e6` (v1 schema
+1.35.0, v2 schema 2.0.0-beta.4; v2 is in Preview upstream). The v2 work
+follows the upstream
 [migration guide](https://agentclientprotocol.com/protocol/v2/migration).
 
 ## Scope and layering
@@ -384,6 +385,16 @@ MCP rows judge the gateway's pass-through end to end. With the API fake
 vendor, which cannot connect to MCP servers, v1 `ACP-SESSION-004` (the agent
 should connect to the servers a client supplies) fails as an advisory row;
 see MCP servers above.
+
+`scripts/acp-schema-check.sh` covers the schema revision this implementation
+targets, which is newer than the one the TCK vendors. It drives the server
+through v1 and v2 flows with both fake vendors (setup, config options,
+prompt turns, list, close, replay, cancel, delete, and error paths) and
+validates every request, response, error, and notification against the
+stable `schema/v1/schema.json` and `schema/v2/schema.json` at `d3ac0e6`:
+84 v1 and 106 v2 payloads, no schema violations. The CLI client's own
+requests and its permission response were validated the same way while it
+drove the reference agent below.
 
 The TCK judges agents only. The client side is checked against the upstream
 TypeScript SDK's dual-version reference agent
