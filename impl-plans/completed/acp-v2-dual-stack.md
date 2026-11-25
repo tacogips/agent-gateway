@@ -51,7 +51,7 @@ Swift in this package (no external ACP adapter).
 
 ## Verification
 
-- `swift test` (207 tests), `swiftlint` (no violations).
+- `swift test` (211 tests), `swiftlint` (no violations).
 - ACP TCK, both versions, CLI and API fake vendors: `VERDICT: CONFORMANT`;
   figures are recorded in the design document.
 

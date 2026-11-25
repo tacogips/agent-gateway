@@ -366,9 +366,9 @@ Results on 2026-11-25 (TCK `7c71c4d`), all `VERDICT: CONFORMANT`:
 
 | Run | MANDATORY | CAPABILITY | ADVISORY |
 | --- | --- | --- | --- |
-| v1, CLI vendor | 39 pass | 15 pass | 20 pass, 1 fail |
+| v1, CLI vendor | 39 pass | 15 pass | 21 pass |
 | v1, API vendor | 36 pass, 3 skipped | 16 pass | 21 pass, 1 fail |
-| v2, CLI vendor | 30 pass, 4 skipped | 73 pass | 30 pass |
+| v2, CLI vendor | 30 pass, 4 skipped | 73 pass | 32 pass |
 | v2, API vendor | 30 pass, 4 skipped | 82 pass | 32 pass |
 
 No MANDATORY or CAPABILITY requirement fails. Skipped rows are requirements
