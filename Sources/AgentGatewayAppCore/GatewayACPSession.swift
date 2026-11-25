@@ -85,6 +85,9 @@ struct GatewaySession {
   /// System prompt text supplied through the standard `systemPrompt`
   /// parameter (`append` mode), combined with the configured one.
   var clientSystemPrompt: String?
+  /// Stdio MCP servers the client supplied on the latest setup request;
+  /// handed to the vendor CLI on every execution.
+  var mcpServers: [GatewayMCPServer] = []
   var vendorSessionId: String?
   var title: String?
   var updatedAt: Date

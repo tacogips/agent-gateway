@@ -89,7 +89,9 @@ public actor GatewayACPAgent: ACPAgent {
 
   /// Validates and stores a new session; shared by both protocol versions.
   func createSession(
-    cwd: String, meta: ACPJSONValue?, systemPrompt: ACPSystemPrompt?, connection: ACPAgentSideConnection?
+    cwd: String, meta: ACPJSONValue?, systemPrompt: ACPSystemPrompt?,
+    mcpServers: [GatewayMCPServer] = [], requiresMCPSupport: Bool = false,
+    connection: ACPAgentSideConnection?
   ) async throws -> GatewaySession {
     guard cwd.hasPrefix("/") else {
       throw ACPError.invalidParams("cwd must be an absolute path")
@@ -105,6 +107,11 @@ public actor GatewayACPAgent: ACPAgent {
         "no model configured; start the agent with --model or pass _meta.agentGateway.model"
       )
     }
+    if requiresMCPSupport, !mcpServers.isEmpty, configuration.vendor?.connectsToMCPServers != true {
+      throw ACPError.invalidParams(
+        "vendor '\(configuration.vendor?.rawValue ?? "")' cannot connect to client-provided MCP servers"
+      )
+    }
     let clientSystemPrompt = try gatewaySystemPromptText(systemPrompt)
     var session = GatewaySession(
       sessionId: "sess-" + UUID().uuidString.lowercased(),
@@ -115,6 +122,7 @@ public actor GatewayACPAgent: ACPAgent {
       updatedAt: Date()
     )
     session.connection = connection
+    session.mcpServers = mcpServers
     session.availableModels = await availableModels(for: configuration)
     sessions[session.sessionId] = session
     return session
@@ -133,6 +141,7 @@ public actor GatewayACPAgent: ACPAgent {
   /// `session/load`/`session/resume` and v2 `session/resume`.
   func reactivateSession(
     _ sessionId: ACPSessionID, cwd: String, systemPrompt: ACPSystemPrompt?,
+    mcpServers: [GatewayMCPServer] = [], requiresMCPSupport: Bool = false,
     connection: ACPAgentSideConnection?
   ) throws -> GatewaySession {
     guard var session = sessions[sessionId] else {
@@ -144,9 +153,16 @@ public actor GatewayACPAgent: ACPAgent {
     guard gatewayNormalizedPath(cwd) == gatewayNormalizedPath(session.cwd) else {
       throw ACPError.invalidParams("cwd does not match the session's working directory")
     }
+    if requiresMCPSupport, !mcpServers.isEmpty, session.configuration.vendor?.connectsToMCPServers != true {
+      throw ACPError.invalidParams(
+        "vendor '\(session.configuration.vendor?.rawValue ?? "")' cannot connect to client-provided MCP servers"
+      )
+    }
     if let text = try gatewaySystemPromptText(systemPrompt) {
       session.clientSystemPrompt = text
     }
+    // The request's servers are the complete set: earlier ones are not restored.
+    session.mcpServers = mcpServers
     session.isActive = true
     session.isClosing = false
     session.connection = connection
@@ -248,7 +264,7 @@ public actor GatewayACPAgent: ACPAgent {
       systemPrompt: session.effectiveSystemPrompt,
       workingDirectory: session.cwd,
       executable: configuration.executable,
-      arguments: configuration.arguments,
+      arguments: configuration.arguments + gatewayMCPArguments(vendor: vendor, servers: session.mcpServers),
       providerName: configuration.providerName,
       apiKeyEnvironment: configuration.apiKeyEnvironment,
       baseURL: configuration.baseURL,
@@ -292,8 +308,11 @@ public actor GatewayACPAgent: ACPAgent {
   public func newSession(
     _ request: ACPNewSessionRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPNewSessionResponse {
+    // v1 has no way to decline stdio servers, so vendors that cannot
+    // connect to them still accept the session and leave them unused.
     let session = try await createSession(
-      cwd: request.cwd, meta: request.meta, systemPrompt: request.systemPrompt, connection: nil
+      cwd: request.cwd, meta: request.meta, systemPrompt: request.systemPrompt,
+      mcpServers: try gatewayMCPServers(v1: request.mcpServers), connection: nil
     )
     return ACPNewSessionResponse(
       sessionId: session.sessionId,
@@ -315,7 +334,8 @@ public actor GatewayACPAgent: ACPAgent {
     _ request: ACPLoadSessionRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPLoadSessionResponse {
     let session = try reactivateSession(
-      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt, connection: nil
+      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt,
+      mcpServers: try gatewayMCPServers(v1: request.mcpServers), connection: nil
     )
     for message in session.history {
       for block in message.content {
@@ -336,7 +356,8 @@ public actor GatewayACPAgent: ACPAgent {
     _ request: ACPLoadSessionRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPLoadSessionResponse {
     let session = try reactivateSession(
-      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt, connection: nil
+      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt,
+      mcpServers: try gatewayMCPServers(v1: request.mcpServers), connection: nil
     )
     return ACPLoadSessionResponse(configOptions: v1ConfigOptions(session))
   }

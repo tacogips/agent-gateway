@@ -57,6 +57,7 @@ Swift in this package (no external ACP adapter).
 
 ## Follow-ups not in scope
 
-- Client-provided MCP servers.
+- MCP servers for vendors other than claude-code and codex (stdio servers
+  are passed through to those two CLIs), and the HTTP MCP transport.
 - Session persistence across server processes.
 - Reporting vendor tool calls, plans, and permission requests.

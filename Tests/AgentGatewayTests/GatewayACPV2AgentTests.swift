@@ -444,8 +444,12 @@ private func text(_ value: String) -> [ACPContentBlock] { [.text(value)] }
   let (client, _) = try await makeV2Gateway(executor: V2ScriptedExecutor())
   let invalid: [ACPV2NewSessionRequest] = [
     ACPV2NewSessionRequest(cwd: "relative/path"),
-    // No MCP transport is advertised, so any server is unsupported.
-    ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: [.stdio(.init(name: "fs", command: "/bin/mcp"))]),
+    // MCP servers: only advertised transports, absolute commands, unique names.
+    ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: [.http(.init(name: "remote", url: "https://example.com/mcp"))]),
+    ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: [.stdio(.init(name: "fs", command: "bin/mcp"))]),
+    ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: [
+      .stdio(.init(name: "fs", command: "/bin/mcp")), .stdio(.init(name: "fs", command: "/bin/other"))
+    ]),
     ACPV2NewSessionRequest(cwd: "/tmp", systemPrompt: ACPSystemPrompt(mode: "override", content: text("x"))),
     ACPV2NewSessionRequest(cwd: "/tmp", systemPrompt: ACPSystemPrompt(content: [])),
     ACPV2NewSessionRequest(
@@ -574,4 +578,100 @@ private actor V1ReplayRecorder: ACPClientDelegate {
   func reset() {
     kinds = []
   }
+}
+
+// MARK: - MCP servers
+
+@Test func stdioMCPServersAreHandedToVendorCLIsThatTakeThem() async throws {
+  let servers: [ACPV2MCPServer] = [.stdio(.init(
+    name: "work space", command: "/usr/local/bin/mcp-fs", args: ["--root", "/work"],
+    env: [ACPEnvVariable(name: "TOKEN", value: "t\"1")]
+  ))]
+
+  // claude-code takes one JSON document.
+  let claude = PromptCapturingExecutor()
+  let (claudeClient, _) = try await makeV2Gateway(
+    executor: claude, defaults: GatewayAgentDefaults(vendor: .claudeCode, model: "sonnet", arguments: ["--verbose"])
+  )
+  var session = try await claudeClient.newSessionV2(ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: servers))
+  _ = try await claudeClient.promptTurnCollecting(ACPV2PromptRequest(sessionId: session.sessionId, prompt: text("hi")))
+  let claudeArguments = try #require(await claude.executions.first?.arguments)
+  #expect(claudeArguments.prefix(2) == ["--verbose", "--mcp-config"])
+  let config = try JSONDecoder().decode(ACPJSONValue.self, from: Data(claudeArguments[2].utf8))
+  #expect(config["mcpServers"]?["work space"] == .object([
+    "type": .string("stdio"), "command": .string("/usr/local/bin/mcp-fs"),
+    "args": .array([.string("--root"), .string("/work")]), "env": .object(["TOKEN": .string("t\"1")])
+  ]))
+
+  // On resume the request's servers are the complete set: none restores none.
+  try await claudeClient.closeSession(sessionId: session.sessionId)
+  _ = try await claudeClient.resumeSessionV2(ACPV2ResumeSessionRequest(sessionId: session.sessionId, cwd: "/tmp"))
+  _ = try await claudeClient.promptTurnCollecting(ACPV2PromptRequest(sessionId: session.sessionId, prompt: text("hi")))
+  #expect(await claude.executions.last?.arguments == ["--verbose"])
+  await claudeClient.stop()
+
+  // codex takes TOML config overrides keyed by a bare server name.
+  let codex = PromptCapturingExecutor()
+  let (codexClient, _) = try await makeV2Gateway(executor: codex)
+  session = try await codexClient.newSessionV2(ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: servers))
+  _ = try await codexClient.promptTurnCollecting(ACPV2PromptRequest(sessionId: session.sessionId, prompt: text("hi")))
+  #expect(await codex.executions.first?.arguments == [
+    "-c", #"mcp_servers.work_space.command="/usr/local/bin/mcp-fs""#,
+    "-c", #"mcp_servers.work_space.args=["--root","/work"]"#,
+    "-c", #"mcp_servers.work_space.env={ "TOKEN" = "t\"1" }"#
+  ])
+  await codexClient.stop()
+}
+
+@Test func mcpTransportIsAdvertisedOnlyForVendorsThatCanConnect() async throws {
+  func capabilities(_ vendor: GatewayVendor?) async throws -> ACPV2SessionCapabilities? {
+    let agent = GatewayACPAgent(
+      defaults: GatewayAgentDefaults(vendor: vendor, model: "m"), executor: V2ScriptedExecutor()
+    )
+    let response = try await agent.initialize(
+      ACPV2InitializeRequest(info: ACPImplementation(name: "test", version: "1"))
+    )
+    return response.capabilities.session
+  }
+  #expect(try await capabilities(.claudeCode)?.mcp?.stdio != nil)
+  #expect(try await capabilities(.codex)?.mcp?.stdio != nil)
+  #expect(try await capabilities(.codex)?.mcp?.http == nil)
+  for vendor in [GatewayVendor.cursor, .openAI, .anthropic, .gemini, .openRouter, .cursorAPI] {
+    #expect(try await capabilities(vendor)?.mcp == nil)
+  }
+  #expect(try await capabilities(nil)?.mcp == nil)
+
+  // A vendor that cannot connect rejects servers instead of ignoring them.
+  let (client, _) = try await makeV2Gateway(
+    executor: V2ScriptedExecutor(), defaults: GatewayAgentDefaults(vendor: .openAI, model: "gpt-5")
+  )
+  do {
+    _ = try await client.newSessionV2(
+      ACPV2NewSessionRequest(cwd: "/tmp", mcpServers: [.stdio(.init(name: "fs", command: "/bin/mcp"))])
+    )
+    Issue.record("expected the MCP server to be rejected")
+  } catch let error as ACPError {
+    #expect(error.code == ACPErrorCode.invalidParams)
+  }
+  await client.stop()
+}
+
+@Test func v1SessionsPassStdioMCPServersAndRejectUnadvertisedTransports() async throws {
+  let executor = PromptCapturingExecutor()
+  let agent = GatewayACPAgent(
+    defaults: GatewayAgentDefaults(vendor: .claudeCode, model: "sonnet"), executor: executor
+  )
+  let (client, _) = await ACPClientConnection.inProcess(v1: agent, v2: agent)
+  _ = try await client.initialize()
+  let session = try await client.newSession(ACPNewSessionRequest(
+    cwd: "/tmp", mcpServers: [ACPMCPServer(name: "fs", command: "/bin/mcp", args: [], env: [])]
+  ))
+  _ = try await client.prompt(ACPPromptRequest(sessionId: session.sessionId, prompt: text("hi")))
+  #expect(await executor.executions.first?.arguments.first == "--mcp-config")
+  await #expect(throws: ACPError.self) {
+    _ = try await client.newSession(ACPNewSessionRequest(
+      cwd: "/tmp", mcpServers: [ACPMCPServer(name: "remote", type: "http", url: "https://example.com/mcp")]
+    ))
+  }
+  await client.stop()
 }

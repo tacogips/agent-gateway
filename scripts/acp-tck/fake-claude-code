@@ -9,6 +9,38 @@ import json
 import sys
 import time
 
+import subprocess
+
+
+def connect_mcp_servers(config_text):
+    """Does what the real CLI does with --mcp-config: launch each stdio
+    server and perform the MCP initialize handshake."""
+    for name, server in json.loads(config_text).get("mcpServers", {}).items():
+        try:
+            process = subprocess.Popen(
+                [server["command"], *server.get("args", [])],
+                env={**__import__("os").environ, **server.get("env", {})},
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            )
+            request = {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "fake-claude-code", "version": "0"}},
+            }
+            process.stdin.write(json.dumps(request) + "\n")
+            process.stdin.flush()
+            process.stdout.readline()
+            process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+            process.stdin.flush()
+            process.stdin.close()
+            process.wait(timeout=5)
+        except Exception as error:  # the fake keeps going, like a vendor would
+            sys.stderr.write(f"mcp server {name}: {error}\n")
+
+
+if "--mcp-config" in sys.argv:
+    connect_mcp_servers(sys.argv[sys.argv.index("--mcp-config") + 1])
+
 prompt = sys.stdin.read()
 slow = "SLOW" in prompt
 session_id = "fake-session-1"

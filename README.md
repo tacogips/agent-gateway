@@ -105,6 +105,12 @@ option (`session/set_config_option`) for vendors that can list models.
 Sessions and their history live in the server process: they can be listed,
 closed, and resumed for as long as that process runs.
 
+Stdio MCP servers a client supplies on session setup are handed to the
+vendor CLI, which connects to them: claude-code through `--mcp-config` and
+codex through `mcp_servers` config overrides. The other vendors cannot
+connect to client-provided MCP servers; v2 then advertises no MCP transport
+and rejects servers, and v1 accepts the field and leaves them unused.
+
 Conformance is checked with the upstream
 [ACP Test Compatibility Kit](https://github.com/agentclientprotocol/acp-tck)
 against deterministic fake vendors:

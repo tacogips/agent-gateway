@@ -76,12 +76,33 @@ Applied in both versions:
 | List, resume, close | `sessionCapabilities.list/resume/close` | baseline |
 | Delete | `sessionCapabilities.delete` | `delete: {}` |
 | `systemPrompt` (`append` mode) | `sessionCapabilities.systemPrompt` | `systemPrompt: {}` |
-| MCP servers | accepted and ignored | not advertised; any `mcpServers` entry is rejected with `-32602` |
+| Stdio MCP servers | supported for claude-code and codex | `mcp.stdio: {}` when the server's vendor is claude-code or codex |
+| HTTP / SSE MCP servers | not advertised; rejected with `-32602` | not advertised; rejected with `-32602` |
 | Authentication | none (`authMethods: []`) | none (`authMethods` omitted) |
 
-Vendor executions do not connect to client-provided MCP servers. In v1 the
-field is accepted and ignored (v1 has no way to decline stdio MCP servers);
-in v2 no transport is advertised, so the spec requires rejecting them.
+### MCP servers
+
+The gateway does not run an MCP client. It hands a session's stdio MCP
+servers to the vendor CLI, which connects to them itself:
+
+| Vendor | How servers are passed |
+| --- | --- |
+| claude-code | `--mcp-config <json>` with one `mcpServers` entry per server |
+| codex | `-c mcp_servers.<name>.command=…`, `.args=…`, `.env=…` overrides; the name is reduced to a TOML bare key |
+| cursor, cursor-api, openai, anthropic, gemini, openrouter | cannot connect: API vendors run no tool loop, and cursor-agent reads MCP servers only from its own configuration files |
+
+The servers of the latest `session/new`, `session/load`, or `session/resume`
+are the complete set for the session; earlier ones are not restored.
+
+- v2 advertises `mcp.stdio` only when the vendor fixed with `server
+  --vendor` can connect. Otherwise no transport is advertised and any
+  server is rejected with `-32602`, as is a server for a session whose
+  `_meta` selects a vendor that cannot connect. A relative `command` and a
+  duplicate `name` are rejected with `-32602`.
+- v1 requires every agent to support stdio servers and has no capability to
+  decline them. Sessions on claude-code and codex connect to them. Sessions
+  on the other vendors accept the field and leave the servers unused; this
+  is a known deviation for those vendors.
 
 ## Sessions
 
@@ -357,9 +378,12 @@ too quickly for the v1 cancellation rows to count (they pass in the CLI run).
 The remaining CAPABILITY skips are features the gateway does not offer: tool
 calls, terminals, plans, permission requests, subagents, slash commands.
 
-The one advisory failure, v1 only, is `ACP-SESSION-004`: the agent should
-connect to the stdio MCP servers a client supplies. The gateway does not
-connect vendor executions to client-provided MCP servers (see Capabilities).
+The CLI fake implements `--mcp-config` the way the real CLI does (it
+launches each server and performs the MCP `initialize` handshake), so the
+MCP rows judge the gateway's pass-through end to end. With the API fake
+vendor, which cannot connect to MCP servers, v1 `ACP-SESSION-004` (the agent
+should connect to the servers a client supplies) fails as an advisory row;
+see MCP servers above.
 
 The TCK judges agents only. The client side is checked against the upstream
 TypeScript SDK's dual-version reference agent
@@ -377,7 +401,8 @@ statement of conformance.
 
 ## Not implemented
 
-- Client-provided MCP servers.
+- MCP servers for vendors other than claude-code and codex, and the HTTP
+  MCP transport.
 - Tool-call, terminal, plan, and permission reporting: vendor CLIs run with
   their own tool handling, and the gateway relays their text and reasoning
   output only. The `ACP` library models these updates for clients that talk

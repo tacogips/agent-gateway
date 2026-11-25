@@ -16,10 +16,14 @@ extension GatewayACPAgent: ACPV2Agent {
       info: ACPImplementation(name: "agent-gateway", version: Version.current, title: "Agent Gateway"),
       capabilities: ACPV2AgentCapabilities(
         session: ACPV2SessionCapabilities(
-          // Text and resource links are the baseline; MCP transports are
-          // not advertised because vendor executions do not connect to
-          // client-provided MCP servers.
+          // Text and resource links are the baseline.
           prompt: ACPV2PromptCapabilities(image: ACPSupportMarker(), embeddedContext: ACPSupportMarker()),
+          // Stdio MCP servers are handed to the vendor CLI, so the
+          // transport is advertised only when the configured vendor takes
+          // them. With no fixed vendor, or one that cannot connect, no
+          // transport is advertised and servers are rejected.
+          mcp: defaults.vendor?.connectsToMCPServers == true
+            ? ACPV2MCPCapabilities(stdio: ACPSupportMarker()) : nil,
           delete: ACPSupportMarker(),
           systemPrompt: ACPSystemPromptCapabilities()
         )
@@ -30,9 +34,10 @@ extension GatewayACPAgent: ACPV2Agent {
   public func newSession(
     _ request: ACPV2NewSessionRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPV2NewSessionResponse {
-    try rejectMCPServers(request.mcpServers)
     let session = try await createSession(
-      cwd: request.cwd, meta: request.meta, systemPrompt: request.systemPrompt, connection: connection
+      cwd: request.cwd, meta: request.meta, systemPrompt: request.systemPrompt,
+      mcpServers: try gatewayMCPServers(v2: request.mcpServers), requiresMCPSupport: true,
+      connection: connection
     )
     return ACPV2NewSessionResponse(
       sessionId: session.sessionId,
@@ -41,17 +46,10 @@ extension GatewayACPAgent: ACPV2Agent {
     )
   }
 
-  /// No MCP transport is advertised, so any client-provided server names a
-  /// transport the gateway does not support.
-  private func rejectMCPServers(_ servers: [ACPV2MCPServer]) throws {
-    guard let server = servers.first else { return }
-    throw ACPError.invalidParams("unsupported MCP server transport '\(server.type)'")
-  }
-
   public func resumeSession(
     _ request: ACPV2ResumeSessionRequest, connection: ACPAgentSideConnection
   ) async throws -> ACPV2ResumeSessionResponse {
-    try rejectMCPServers(request.mcpServers)
+    let mcpServers = try gatewayMCPServers(v2: request.mcpServers)
     if case .other(let cursor)? = request.replayFrom {
       // Never substitute another replay mode for an unsupported cursor.
       throw ACPError.invalidParams(
@@ -59,7 +57,8 @@ extension GatewayACPAgent: ACPV2Agent {
       )
     }
     let session = try reactivateSession(
-      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt, connection: connection
+      request.sessionId, cwd: request.cwd, systemPrompt: request.systemPrompt,
+      mcpServers: mcpServers, requiresMCPSupport: true, connection: connection
     )
     let sessionId = session.sessionId
     // Everything below is sent without suspension, so no live update can
