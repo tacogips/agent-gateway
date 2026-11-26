@@ -101,3 +101,39 @@ import Testing
   #expect(command.arguments.contains("--include-partial-messages"))
   #expect(command.arguments.contains("stream-json"))
 }
+
+@Test func antigravityStreamEventsAndCLICommand() throws {
+  let command = try cliCommand(GatewayExecuteParams(
+    vendor: .antigravity,
+    model: "gemini-4-neon",
+    prompt: "hello",
+    arguments: ["--effort", "high", "--dangerously-skip-permissions"],
+    sessionMode: .reuse,
+    sessionId: "conv-1"
+  ))
+  #expect(command.executable == "agy")
+  #expect(command.arguments == [
+    "--output-format", "stream-json",
+    "--resume", "conv-1",
+    "--model", "gemini-4-neon",
+    "--effort", "high",
+    "--dangerously-skip-permissions",
+    "-p=hello"
+  ])
+  #expect(command.stdin.isEmpty)
+
+  let delta = parseVendorJSON(
+    #"{"event":"step_update","step_update":{"conversation_id":"conv-1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Hel"}}"#,
+    vendor: .antigravity
+  )
+  #expect(delta.delta == "Hel")
+  #expect(delta.sessionId == "conv-1")
+
+  let result = parseVendorJSON(
+    #"{"event":"result","result":{"conversation_id":"conv-1","status":"SUCCESS","response":"Hello","usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}}"#,
+    vendor: .antigravity
+  )
+  #expect(result.snapshot == "Hello")
+  #expect(result.sessionId == "conv-1")
+  #expect(result.usage == GatewayUsage(inputTokens: 10, outputTokens: 4, totalTokens: 14))
+}

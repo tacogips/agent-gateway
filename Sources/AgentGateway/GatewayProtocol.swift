@@ -8,6 +8,7 @@ public enum GatewayVendor: String, Codable, CaseIterable, Sendable {
   case claudeCode = "claude-code"
   case codex
   case cursor
+  case antigravity
   case cursorAPI = "cursor-api"
   case openAI = "openai"
   case anthropic
@@ -16,7 +17,7 @@ public enum GatewayVendor: String, Codable, CaseIterable, Sendable {
 
   public var isCLI: Bool {
     switch self {
-    case .claudeCode, .codex, .cursor:
+    case .claudeCode, .codex, .cursor, .antigravity:
       true
     case .openAI, .anthropic, .gemini, .openRouter, .cursorAPI:
       false

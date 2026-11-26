@@ -63,7 +63,7 @@ struct GatewayModelPricingStore: Sendable {
     switch vendor {
     case .anthropic, .claudeCode: [modelId, "anthropic/\(modelId)"]
     case .openAI, .codex: [modelId, "openai/\(modelId)"]
-    case .gemini: ["gemini/\(modelId)", modelId]
+    case .gemini, .antigravity: ["gemini/\(modelId)", modelId]
     case .openRouter: ["openrouter/\(modelId)", modelId]
     case .cursor, .cursorAPI: []
     }

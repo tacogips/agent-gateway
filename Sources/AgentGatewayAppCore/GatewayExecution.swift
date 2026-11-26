@@ -333,6 +333,7 @@ func defaultGatewayExecutable(_ vendor: GatewayVendor) -> String {
   case .codex: "codex"
   case .claudeCode: "claude"
   case .cursor: "cursor-agent"
+  case .antigravity: "agy"
   case .openAI, .anthropic, .gemini, .openRouter, .cursorAPI: ""
   }
 }
@@ -429,6 +430,22 @@ func cliCommand(
     let arguments = ["--print", "--output-format", "stream-json"]
       + (params.sessionMode == .reuse ? params.sessionId.map { ["--resume", $0] } ?? [] : [])
       + ["--model", params.model] + params.arguments + ["--", prompt]
+    return GatewayCLICommand(
+      executable: executable,
+      arguments: arguments,
+      environment: [:],
+      stdin: ""
+    )
+  case .antigravity:
+    var arguments = ["--output-format", "stream-json"]
+    if params.sessionMode == .reuse, let sessionId = params.sessionId {
+      arguments += ["--resume", sessionId]
+    }
+    if !params.model.isEmpty {
+      arguments += ["--model", params.model]
+    }
+    arguments += params.arguments
+    arguments.append("-p=\(prompt)")
     return GatewayCLICommand(
       executable: executable,
       arguments: arguments,
@@ -655,6 +672,33 @@ private func parseVendorText(_ object: [String: Any], vendor: GatewayVendor) -> 
       snapshot: object["result"] as? String ?? object["text"] as? String,
       sessionId: sessionId
     )
+  case .antigravity:
+    let event = object["event"] as? String ?? type
+    let conversationId = object["conversation_id"] as? String ?? sessionId
+    if event == "step_update", let stepUpdate = object["step_update"] as? [String: Any] {
+      let stepSessionId = stepUpdate["conversation_id"] as? String ?? conversationId
+      let stepType = stepUpdate["step_type"] as? String ?? event
+      let textDelta = stepType == "agent_response" ? stepUpdate["text_delta"] as? String : nil
+      let thinkingDelta = stepUpdate["thinking_delta"] as? String ?? stepUpdate["thought_delta"] as? String
+      return ParsedVendorEvent(
+        type: stepType,
+        delta: textDelta,
+        thinkingDelta: thinkingDelta,
+        usage: parseUsage(stepUpdate["usage"]),
+        sessionId: stepSessionId
+      )
+    }
+    if event == "result", let result = object["result"] as? [String: Any] {
+      let resultSessionId = result["conversation_id"] as? String ?? conversationId
+      let response = (result["status"] as? String) == "ERROR" ? nil : result["response"] as? String
+      return ParsedVendorEvent(
+        type: "result",
+        snapshot: response,
+        usage: parseUsage(result["usage"]),
+        sessionId: resultSessionId
+      )
+    }
+    return ParsedVendorEvent(type: event, sessionId: conversationId)
   case .openAI:
     // The Responses SSE stream reports several `delta`-carrying events;
     // only output_text belongs in the answer, reasoning summaries are

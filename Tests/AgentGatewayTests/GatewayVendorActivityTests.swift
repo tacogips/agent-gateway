@@ -124,6 +124,20 @@ private func activity(_ line: String, _ vendor: GatewayVendor) -> ParsedVendorAc
   )])
 }
 
+@Test func antigravityToolStepsMapToToolCalls() {
+  let started = #"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/repo/Package.swift"}}}}"#
+  #expect(activity(started, .antigravity).toolCalls == [GatewayToolCallEvent(
+    toolCallId: "step-2", name: "read_file", title: "read_file /repo/Package.swift", kind: .read, status: .inProgress,
+    rawInput: .object(["Path": .string("/repo/Package.swift")]),
+    locations: [ACPToolCallLocation(path: "/repo/Package.swift")]
+  )])
+
+  let completed = #"{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/repo/Package.swift"},"output":"10 lines"}}}"#
+  let done = activity(completed, .antigravity).toolCalls.first
+  #expect(done?.status == .completed)
+  #expect(done?.outputText == "10 lines")
+}
+
 @Test func apiVendorLinesCarryNoActivity() {
   let line = #"{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"readToolCall":{"args":{}}}}"#
   #expect(activity(line, .openAI) == ParsedVendorActivity())

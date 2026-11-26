@@ -31,6 +31,12 @@ func parseVendorActivity(data: Data, object: [String: Any], vendor: GatewayVendo
     guard ["item.started", "item.updated", "item.completed"].contains(type) else { return ParsedVendorActivity() }
   case .cursor:
     guard type == "tool_call" else { return ParsedVendorActivity() }
+  case .antigravity:
+    guard object["event"] as? String == "step_update",
+          let stepUpdate = object["step_update"] as? [String: Any],
+          stepUpdate["step_type"] as? String == "tool" else {
+      return ParsedVendorActivity()
+    }
   case .cursorAPI, .openAI, .anthropic, .gemini, .openRouter:
     return ParsedVendorActivity()
   }
@@ -39,6 +45,7 @@ func parseVendorActivity(data: Data, object: [String: Any], vendor: GatewayVendo
   case .claudeCode: return claudeCodeActivity(value)
   case .codex: return codexActivity(value)
   case .cursor: return cursorActivity(value)
+  case .antigravity: return antigravityActivity(value)
   case .cursorAPI, .openAI, .anthropic, .gemini, .openRouter: return ParsedVendorActivity()
   }
 }
@@ -378,4 +385,50 @@ private func cursorToolKind(_ name: String) -> ACPToolKind {
   if lowered.hasPrefix("shell") { return .execute }
   if lowered.hasPrefix("grep") || lowered.hasPrefix("glob") || lowered.hasPrefix("ls") { return .search }
   return .other
+}
+
+// MARK: - Antigravity
+
+/// Antigravity (`agy`) `stream-json` tool step updates:
+/// `{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE"|"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{...},"output":"..."}}}`.
+private func antigravityActivity(_ value: ACPJSONValue) -> ParsedVendorActivity {
+  var activity = ParsedVendorActivity()
+  guard let stepUpdate = value["step_update"] else { return activity }
+  let stepIndex = stepUpdate["step_index"]?.integerValue
+  let id = stepUpdate["tool_call_id"]?.stringValue ?? stepIndex.map { "step-\($0)" } ?? "tool"
+  let toolInfo = stepUpdate["tool_info"]
+  let name = stepUpdate["tool_name"]?.stringValue ?? toolInfo?["name"]?.stringValue
+  let parameters = toolInfo?["parameters"]?.nonNull
+  let output = toolInfo?["output"]?.stringValue
+  let state = stepUpdate["state"]?.stringValue?.uppercased()
+  let status: ACPToolCallStatus = switch state {
+  case "DONE", "COMPLETED": .completed
+  case "ERROR", "FAILED": .failed
+  case "ACTIVE", "RUNNING": .inProgress
+  default: .pending
+  }
+  let path = parameters?["Path"]?.stringValue ?? parameters?["path"]?.stringValue
+  let detail = path ?? parameters?["CommandLine"]?.stringValue ?? parameters?["command"]?.stringValue
+  activity.toolCalls.append(GatewayToolCallEvent(
+    toolCallId: id,
+    name: name,
+    title: name.map { tool in detail.map { gatewayShortTitle("\(tool) \($0)") } ?? tool },
+    kind: name.map(antigravityToolKind),
+    status: status,
+    rawInput: parameters,
+    outputText: output,
+    locations: gatewayLocation(path)
+  ))
+  return activity
+}
+
+private func antigravityToolKind(_ name: String) -> ACPToolKind {
+  switch name {
+  case "read_file", "view_file", "view_file_outline", "view_code_item": .read
+  case "write_file", "write_to_file", "edit_file", "replace_file_content", "multi_replace_file_content", "sed_file", "notebook_edit": .edit
+  case "run_command", "send_command_input", "command_status": .execute
+  case "grep_search", "find_by_name", "list_dir": .search
+  case "search_web", "read_url_content", "open_browser_url", "read_browser_page": .fetch
+  default: .other
+  }
 }

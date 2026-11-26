@@ -10,7 +10,7 @@ import Testing
   #expect(decoded == params)
   #expect(decoded.protocolVersion == "1.0")
   #expect(GatewayVendor.allCases.map(\.rawValue) == [
-    "claude-code", "codex", "cursor", "cursor-api", "openai", "anthropic", "gemini", "openrouter"
+    "claude-code", "codex", "cursor", "antigravity", "cursor-api", "openai", "anthropic", "gemini", "openrouter"
   ])
 }
 

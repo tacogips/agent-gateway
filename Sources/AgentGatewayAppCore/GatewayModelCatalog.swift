@@ -96,7 +96,7 @@ func parseVendorModelList(_ object: [String: Any], vendor: GatewayVendor) -> [Ga
     // {"models":["model-id", ...]}
     let entries = object["models"] as? [String] ?? []
     return entries.map { GatewayModelInfo(modelId: $0) }
-  case .claudeCode, .codex, .cursor:
+  case .claudeCode, .codex, .cursor, .antigravity:
     return []
   }
 }

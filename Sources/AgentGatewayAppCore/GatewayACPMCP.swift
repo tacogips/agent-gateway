@@ -20,7 +20,7 @@ extension GatewayVendor {
   var connectsToMCPServers: Bool {
     switch self {
     case .claudeCode, .codex: true
-    case .cursor, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter: false
+    case .cursor, .antigravity, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter: false
     }
   }
 }
@@ -106,7 +106,7 @@ func gatewayMCPArguments(vendor: GatewayVendor, servers: [GatewayMCPServer]) -> 
       }
       return overrides.flatMap { ["-c", $0] }
     }
-  case .cursor, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter:
+  case .cursor, .antigravity, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter:
     return []
   }
 }

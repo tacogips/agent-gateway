@@ -36,7 +36,7 @@ func applyGatewayAPIKeyHeaders(
     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
   case .cursorAPI:
     request.setValue("Basic \(Data("\(apiKey):".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
-  case .claudeCode, .codex, .cursor:
+  case .claudeCode, .codex, .cursor, .antigravity:
     throw GatewayRPCError(code: -32602, message: "CLI vendor cannot create an API request")
   }
 }
@@ -48,7 +48,7 @@ func defaultAPIKeyEnvironment(for vendor: GatewayVendor) -> String {
   case .gemini: "GEMINI_API_KEY"
   case .openRouter: "OPENROUTER_API_KEY"
   case .cursorAPI: "CURSOR_API_KEY"
-  case .claudeCode, .codex, .cursor: ""
+  case .claudeCode, .codex, .cursor, .antigravity: ""
   }
 }
 
@@ -60,7 +60,7 @@ func defaultGatewayBaseURL(for vendor: GatewayVendor) throws -> String {
   case .gemini: "https://generativelanguage.googleapis.com/v1beta"
   case .openRouter: "https://openrouter.ai/api/v1"
   case .cursorAPI: "https://api.cursor.com/v1"
-  case .claudeCode, .codex, .cursor:
+  case .claudeCode, .codex, .cursor, .antigravity:
     throw GatewayRPCError(code: -32602, message: "CLI vendor has no API base URL")
   }
 }
@@ -79,7 +79,7 @@ private func apiURL(_ params: GatewayExecuteParams, apiKey: String) throws -> UR
     value = appendPath(base, "chat/completions")
   case .cursorAPI:
     value = appendPath(base, "agents")
-  case .claudeCode, .codex, .cursor:
+  case .claudeCode, .codex, .cursor, .antigravity:
     throw GatewayRPCError(code: -32602, message: "CLI vendor cannot create an API URL")
   }
   guard let url = URL(string: value) else {
@@ -175,7 +175,7 @@ private func apiBody(_ params: GatewayExecuteParams) throws -> [String: Any] {
     body["workOnCurrentBranch"] = params.cursorAPI?.workOnCurrentBranch
     body["autoCreatePR"] = params.cursorAPI?.autoCreatePR
     return body
-  case .claudeCode, .codex, .cursor:
+  case .claudeCode, .codex, .cursor, .antigravity:
     return [:]
   }
 }

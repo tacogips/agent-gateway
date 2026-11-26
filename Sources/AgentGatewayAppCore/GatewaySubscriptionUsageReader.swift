@@ -103,7 +103,7 @@ func subscriptionUsageExchange(_ vendor: GatewayVendor) throws -> GatewaySubscri
       },
       parse: parseCodexSubscriptionUsage
     )
-  case .cursor, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter:
+  case .cursor, .antigravity, .cursorAPI, .openAI, .anthropic, .gemini, .openRouter:
     throw GatewayRPCError(
       code: gatewaySubscriptionUsageUnsupportedCode,
       message: "\(vendor.rawValue) does not report subscription usage"

@@ -119,7 +119,7 @@ public struct AppCommand: Sendable {
       agent-gateway decide --request <json-file|-> [--api-key-environment <name>] [--base-url <url>]
       agent-gateway --help
 
-    Vendors: claude-code, codex, cursor, cursor-api, openai, anthropic, gemini, openrouter
+    Vendors: claude-code, codex, cursor, antigravity, cursor-api, openai, anthropic, gemini, openrouter
 
     Protocol: Agent Client Protocol (ACP, https://agentclientprotocol.com),
     protocol versions 1 and 2.
